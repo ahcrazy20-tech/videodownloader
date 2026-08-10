@@ -153,10 +153,10 @@ jobs:
               private func smartDownload() {
                   guard !isResolving else { return }
                   isResolving = true
-                  downloadManager.startSmartDownload(pageURL: urlString) { result in
+                  downloadManager.startSmartDownload(pageURL: urlString) { success, errorMessage in
                       DispatchQueue.main.async {
                           isResolving = false
-                          if case .failure(let message) = result {
+                          if !success, let message = errorMessage {
                               alertMessage = message
                               showAlert = true
                           }
@@ -637,11 +637,11 @@ jobs:
 
               /// تحميل ذكي: رابط مباشر ← سيرفرات الاستخراج (cobalt) ← رسالة إرشادية
               /// يدعم يوتيوب، تيك توك، انستجرام، تويتر، فيسبوك وغيرها
-              func startSmartDownload(pageURL: String, completion: ((Result<String, String>) -> Void)? = nil) {
+              func startSmartDownload(pageURL: String, completion: ((Bool, String?) -> Void)? = nil) {
                   // 1) لو الرابط ملف وسائط مباشر — حمّله فوراً
                   if VideoResolver.isDirectMediaURL(pageURL) {
                       startDownload(url: pageURL)
-                      completion?(.success("direct"))
+                      completion?(true, nil)
                       return
                   }
 
@@ -651,9 +651,9 @@ jobs:
                           switch result {
                           case .success(let resolved):
                               self.startDownload(url: resolved.url.absoluteString)
-                              completion?(.success(resolved.source))
+                              completion?(true, resolved.source)
                           case .failure:
-                              completion?(.failure("لم يتمكن أي سيرفر من استخراج الرابط. جرب زر استخراج فيديوهات داخل المتصفح، أو أضف سيرفر cobalt خاص بك من الإعدادات لضمان يوتيوب."))
+                              completion?(false, "لم يتمكن أي سيرفر من استخراج الرابط. جرب زر استخراج فيديوهات داخل المتصفح، أو أضف سيرفر cobalt خاص بك من الإعدادات لضمان يوتيوب.")
                           }
                       }
                   }
