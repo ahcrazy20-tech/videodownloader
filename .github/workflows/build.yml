@@ -352,13 +352,12 @@ jobs:
                       // استرجاع موضع التوقف السابق — مع انتظار تحميل المدة الفعلية أولاً
                       savedProgress = UserDefaults.standard.double(forKey: progressKey)
                       if savedProgress > 1.0 {
-                          asset.loadValuesAsynchronously(forKeys: ["duration"]) {
-                              DispatchQueue.main.async {
-                                  let duration = asset.duration.seconds
-                                  guard duration.isFinite, duration > 0 else { return }
-                                  let target = CMTime(seconds: min(savedProgress, max(duration - 1, 0)), preferredTimescale: 600)
-                                  newPlayer.seek(to: target)
-                              }
+                          let resumeTime = savedProgress
+                          Task { @MainActor in
+                              guard let duration = try? await asset.load(.duration),
+                                    duration.seconds.isFinite, duration.seconds > 0 else { return }
+                              let target = CMTime(seconds: min(resumeTime, max(duration.seconds - 1, 0)), preferredTimescale: 600)
+                              newPlayer.seek(to: target)
                           }
                       }
                   }
@@ -759,21 +758,24 @@ jobs:
 
               private func extractAudio(from videoURL: URL, completion: @escaping (URL?) -> Void) {
                   let asset = AVAsset(url: videoURL)
-                  guard let audioTrack = asset.tracks(withMediaType: .audio).first, audioTrack.trackID != kCMPersistentTrackID_Invalid else {
-                      completion(nil)
-                      return
-                  }
+                  Task {
+                      let tracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
+                      guard let audioTrack = tracks.first, audioTrack.trackID != kCMPersistentTrackID_Invalid else {
+                          completion(nil)
+                          return
+                      }
 
-                  let outputURL = FileManager.default.temporaryDirectory
-                      .appendingPathComponent(UUID().uuidString)
-                      .appendingPathExtension("m4a")
-                  try? FileManager.default.removeItem(at: outputURL)
+                      let outputURL = FileManager.default.temporaryDirectory
+                          .appendingPathComponent(UUID().uuidString)
+                          .appendingPathExtension("m4a")
+                      try? FileManager.default.removeItem(at: outputURL)
 
-                  let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A)
-                  exportSession?.outputFileType = .m4a
-                  exportSession?.outputURL = outputURL
-                  exportSession?.exportAsynchronously {
-                      completion(exportSession?.status == .completed ? outputURL : nil)
+                      let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A)
+                      exportSession?.outputFileType = .m4a
+                      exportSession?.outputURL = outputURL
+                      exportSession?.exportAsynchronously {
+                          completion(exportSession?.status == .completed ? outputURL : nil)
+                      }
                   }
               }
           }
@@ -872,42 +874,54 @@ jobs:
 
               private func convertAudioToPCM(audioURL: URL, completion: @escaping (Data?) -> Void) {
                   let asset = AVAsset(url: audioURL)
-                  guard let audioTrack = asset.tracks(withMediaType: .audio).first else {
-                      completion(nil)
-                      return
-                  }
+                  Task {
+                      let tracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
+                      guard let audioTrack = tracks.first else {
+                          completion(nil)
+                          return
+                      }
 
-                  let outputSettings: [String: Any] = [
-                      AVFormatIDKey: kAudioFormatLinearPCM,
-                      AVSampleRateKey: 16000.0,
-                      AVNumberOfChannelsKey: 1,
-                      AVLinearPCMBitDepthKey: 16,
-                      AVLinearPCMIsFloatKey: false,
-                      AVLinearPCMIsBigEndianKey: false
-                  ]
+                      let outputSettings: [String: Any] = [
+                          AVFormatIDKey: kAudioFormatLinearPCM,
+                          AVSampleRateKey: 16000.0,
+                          AVNumberOfChannelsKey: 1,
+                          AVLinearPCMBitDepthKey: 16,
+                          AVLinearPCMIsFloatKey: false,
+                          AVLinearPCMIsBigEndianKey: false
+                      ]
 
-                  guard let reader = try? AVAssetReader(asset: asset) else {
-                      completion(nil)
-                      return
-                  }
-                  let output = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: outputSettings)
-                  reader.add(output)
+                      guard let reader = try? AVAssetReader(asset: asset) else {
+                          completion(nil)
+                          return
+                      }
+                      let output = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: outputSettings)
+                      reader.add(output)
 
-                  var pcmData = Data()
-                  reader.startReading()
-                  while let sampleBuffer = output.copyNextSampleBuffer() {
-                      if let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) {
-                          // ضمان تجانس الذاكرة قبل قراءة المؤشر مباشرة
-                          CMBlockBufferAssureBlockMemoryIsContiguous(blockBuffer)
-                          var length = 0
-                          var dataPointer: UnsafeMutablePointer<Int8>?
-                          CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &dataPointer)
-                          if let dataPointer = dataPointer {
-                              pcmData.append(dataPointer, count: length)
+                      var pcmData = Data()
+                      reader.startReading()
+                      while let sampleBuffer = output.copyNextSampleBuffer() {
+                          if let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) {
+                              // قراءة كل الأجزاء المتجاورة في البلوك (قد يكون مقسماً لأكثر من جزء)
+                              let totalLength = CMBlockBufferGetDataLength(blockBuffer)
+                              var offset = 0
+                              while offset < totalLength {
+                                  var chunkLength = 0
+                                  var dataPointer: UnsafeMutablePointer<Int8>?
+                                  let status = CMBlockBufferGetDataPointer(
+                                      blockBuffer,
+                                      atOffset: offset,
+                                      lengthAtOffsetOut: &chunkLength,
+                                      totalLengthOut: nil,
+                                      dataPointerOut: &dataPointer
+                                  )
+                                  guard status == kCMBlockBufferNoErr, let pointer = dataPointer, chunkLength > 0 else { break }
+                                  pcmData.append(UnsafeRawPointer(pointer), count: chunkLength)
+                                  offset += chunkLength
+                              }
                           }
                       }
+                      completion(pcmData.isEmpty ? nil : pcmData)
                   }
-                  completion(pcmData.isEmpty ? nil : pcmData)
               }
 
               private func transcribeWithWhisper(pcmData: Data, modelPath: String, completion: @escaping (String?) -> Void) {
@@ -1131,38 +1145,48 @@ jobs:
               }
 
               func showSyncControls() -> some View {
+                  SubtitleSyncControls(syncManager: self)
+              }
+          }
+
+          // إصلاح: $property داخل الكلاس ترجع Published.Publisher وليس Binding
+          // الحل: عرض SwiftUI منفصل بـ ObservedObject يعطينا Binding صحيحة
+          struct SubtitleSyncControls: View {
+              @ObservedObject var syncManager: SubtitleSyncManager
+
+              var body: some View {
                   VStack(spacing: 12) {
                       HStack {
                           Text("تزامن الترجمة")
                               .font(.headline)
                           Spacer()
-                          Toggle("", isOn: $isSyncEnabled)
+                          Toggle("", isOn: $syncManager.isSyncEnabled)
                               .labelsHidden()
                       }
 
                       HStack(spacing: 20) {
                           Button {
-                              adjustOffset(by: -0.5)
+                              syncManager.adjustOffset(by: -0.5)
                           } label: {
                               Image(systemName: "backward.frame.fill")
                                   .font(.title2)
                           }
 
-                          Text(String(format: "%.1f ث", subtitleOffset))
+                          Text(String(format: "%.1f ث", syncManager.subtitleOffset))
                               .font(.title3)
                               .fontWeight(.semibold)
                               .frame(minWidth: 70)
-                              .foregroundColor(subtitleOffset == 0 ? .primary : .blue)
+                              .foregroundColor(syncManager.subtitleOffset == 0 ? .primary : .blue)
 
                           Button {
-                              adjustOffset(by: 0.5)
+                              syncManager.adjustOffset(by: 0.5)
                           } label: {
                               Image(systemName: "forward.frame.fill")
                                   .font(.title2)
                           }
 
                           Button {
-                              resetOffset()
+                              syncManager.resetOffset()
                           } label: {
                               Image(systemName: "arrow.counterclockwise")
                                   .font(.title2)
@@ -1170,7 +1194,7 @@ jobs:
                       }
 
                       Slider(
-                          value: $subtitleOffset,
+                          value: $syncManager.subtitleOffset,
                           in: -10...10,
                           step: 0.1,
                           minimumValueLabel: Text("-10s"),
