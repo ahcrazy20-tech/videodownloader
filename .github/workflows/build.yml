@@ -61,6 +61,9 @@ jobs:
               @State private var loadTrigger: Int = 0
               @State private var showDownloads = false
               @State private var showTranslationSettings = false
+              @State private var isResolving = false
+              @State private var showAlert = false
+              @State private var alertMessage = ""
 
               var body: some View {
                   VStack(spacing: 0) {
@@ -75,6 +78,19 @@ jobs:
                               loadTrigger += 1
                           }
                           .buttonStyle(.borderedProminent)
+
+                          // زر التحميل الذكي: يحلل رابط أي منصة (يوتيوب، تيك توك، انستجرام...)
+                          Button {
+                              smartDownload()
+                          } label: {
+                              if isResolving {
+                                  ProgressView().scaleEffect(0.8)
+                              } else {
+                                  Image(systemName: "square.and.arrow.down.fill")
+                              }
+                          }
+                          .buttonStyle(.borderedProminent)
+                          .disabled(isResolving)
                       }
                       .padding(.horizontal)
                       .padding(.top, 8)
@@ -124,6 +140,26 @@ jobs:
                   .onReceive(NotificationCenter.default.publisher(for: .videoURLFound)) { notification in
                       if let url = notification.object as? String {
                           downloadManager.startDownload(url: url)
+                      }
+                  }
+                  .alert("تعذر التحميل", isPresented: $showAlert) {
+                      Button("حسناً", role: .cancel) {}
+                  } message: {
+                      Text(alertMessage)
+                  }
+              }
+
+              /// التحميل الذكي: يستخدم سيرفرات الاستخراج لتحويل رابط المنصة إلى ملف مباشر
+              private func smartDownload() {
+                  guard !isResolving else { return }
+                  isResolving = true
+                  downloadManager.startSmartDownload(pageURL: urlString) { result in
+                      DispatchQueue.main.async {
+                          isResolving = false
+                          if case .failure(let message) = result {
+                              alertMessage = message
+                              showAlert = true
+                          }
                       }
                   }
               }
@@ -357,7 +393,8 @@ jobs:
                               guard let duration = try? await asset.load(.duration),
                                     duration.seconds.isFinite, duration.seconds > 0 else { return }
                               let target = CMTime(seconds: min(resumeTime, max(duration.seconds - 1, 0)), preferredTimescale: 600)
-                              newPlayer.seek(to: target)
+                              // في SDK الجديد: seek(to:) بقى async ولازم await
+                              await newPlayer.seek(to: target)
                           }
                       }
                   }
@@ -598,6 +635,30 @@ jobs:
                   item.task = task
               }
 
+              /// تحميل ذكي: رابط مباشر ← سيرفرات الاستخراج (cobalt) ← رسالة إرشادية
+              /// يدعم يوتيوب، تيك توك، انستجرام، تويتر، فيسبوك وغيرها
+              func startSmartDownload(pageURL: String, completion: ((Result<String, String>) -> Void)? = nil) {
+                  // 1) لو الرابط ملف وسائط مباشر — حمّله فوراً
+                  if VideoResolver.isDirectMediaURL(pageURL) {
+                      startDownload(url: pageURL)
+                      completion?(.success("direct"))
+                      return
+                  }
+
+                  // 2) حلّل الرابط عبر سيرفرات متوافقة مع cobalt (واحد ورا التاني)
+                  VideoResolver.resolve(pageURL: pageURL) { result in
+                      DispatchQueue.main.async {
+                          switch result {
+                          case .success(let resolved):
+                              self.startDownload(url: resolved.url.absoluteString)
+                              completion?(.success(resolved.source))
+                          case .failure:
+                              completion?(.failure("لم يتمكن أي سيرفر من استخراج الرابط. جرب زر استخراج فيديوهات داخل المتصفح، أو أضف سيرفر cobalt خاص بك من الإعدادات لضمان يوتيوب."))
+                          }
+                      }
+                  }
+              }
+
               func deleteVideo(at index: Int) {
                   let item = downloads[index]
                   if let localURL = item.localURL {
@@ -648,6 +709,142 @@ jobs:
               @Published var localURL: URL?
 
               init(url: URL) { self.url = url }
+          }
+          EOF
+
+          # ========== Managers/VideoResolver.swift (جديد: تحميل من أي منصة — يوتيوب، تيك توك، انستجرام...) ==========
+          cat > VideoDownloader/Managers/VideoResolver.swift << 'EOF'
+          import Foundation
+
+          /// محرك الاستخراج الذكي: يحوّل رابط أي منصة إلى رابط تحميل مباشر
+          /// يعتمد على سيرفرات متوافقة مع cobalt (https://github.com/imputnet/cobalt)
+          /// القائمة المجتمعية تتغير باستمرار: https://instances.cobalt.best
+          class VideoResolver {
+              struct ResolvedVideo {
+                  let url: URL
+                  let filename: String
+                  let source: String
+              }
+
+              private static let defaultsKey = "customResolverEndpoints"
+
+              /// سيرفرات مجتمعية عامة تعمل حالياً (قد تتوقف — يُفضّل استضافة سيرفرك الخاص)
+              static let defaultEndpoints: [String] = [
+                  "https://cobalt-api.meowing.de/",
+                  "https://cobalt-backend.canine.tools/",
+                  "https://capi.3kh0.net/",
+                  "https://kityune.imput.net/"
+              ]
+
+              /// السيرفرات المستخدمة: الخاص بالمستخدم أولاً ثم الافتراضية
+              static var resolverEndpoints: [String] {
+                  let custom = UserDefaults.standard.stringArray(forKey: defaultsKey) ?? []
+                  return custom + defaultEndpoints
+              }
+
+              static func addCustomEndpoint(_ endpoint: String) {
+                  var trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+                  guard !trimmed.isEmpty else { return }
+                  if !trimmed.hasPrefix("http") { trimmed = "https://" + trimmed }
+                  if !trimmed.hasSuffix("/") { trimmed += "/" }
+                  var custom = UserDefaults.standard.stringArray(forKey: defaultsKey) ?? []
+                  if !custom.contains(trimmed) {
+                      custom.insert(trimmed, at: 0)
+                      UserDefaults.standard.set(custom, forKey: defaultsKey)
+                  }
+              }
+
+              /// هل الرابط ملف وسائط مباشر بالفعل؟
+              static func isDirectMediaURL(_ urlString: String) -> Bool {
+                  guard let url = URL(string: urlString),
+                        let scheme = url.scheme?.lowercased(),
+                        scheme.hasPrefix("http") else { return false }
+                  let lower = urlString.lowercased()
+                  let extensions = [".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".m4a", ".mp3", ".aac", ".flv", ".ts"]
+                  return extensions.contains { lower.contains($0) }
+              }
+
+              /// جرّب كل السيرفرات بالترتيب حتى ينجح واحد
+              static func resolve(pageURL: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+                  let endpoints = resolverEndpoints
+                  guard !endpoints.isEmpty else {
+                      completion(.failure(NSError(domain: "VideoResolver", code: -1, userInfo: [NSLocalizedDescriptionKey: "لا توجد سيرفرات استخراج"])))
+                      return
+                  }
+                  tryEndpoints(endpoints, pageURL: pageURL, index: 0, completion: completion)
+              }
+
+              private static func tryEndpoints(_ endpoints: [String], pageURL: String, index: Int, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+                  guard index < endpoints.count else {
+                      completion(.failure(NSError(domain: "VideoResolver", code: -2, userInfo: [NSLocalizedDescriptionKey: "فشلت جميع سيرفرات الاستخراج"])))
+                      return
+                  }
+                  requestEndpoint(endpoints[index], pageURL: pageURL) { result in
+                      switch result {
+                      case .success:
+                          completion(result)
+                      case .failure:
+                          tryNext(endpoints, pageURL: pageURL, index: index + 1, completion: completion)
+                      }
+                  }
+              }
+
+              private static func tryNext(_ endpoints: [String], pageURL: String, index: Int, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+                  tryEndpoints(endpoints, pageURL: pageURL, index: index, completion: completion)
+              }
+
+              private static func requestEndpoint(_ endpoint: String, pageURL: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+                  guard let url = URL(string: endpoint) else {
+                      completion(.failure(NSError(domain: "VideoResolver", code: 1)))
+                      return
+                  }
+
+                  var request = URLRequest(url: url)
+                  request.httpMethod = "POST"
+                  request.timeoutInterval = 25
+                  request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+                  let body: [String: Any] = [
+                      "url": pageURL,
+                      "downloadMode": "auto",
+                      "videoQuality": "1080",
+                      "filenameStyle": "basic"
+                  ]
+                  request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+                  URLSession.shared.dataTask(with: request) { data, response, _ in
+                      guard let data = data,
+                            let http = response as? HTTPURLResponse,
+                            http.statusCode == 200,
+                            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                          completion(.failure(NSError(domain: "VideoResolver", code: 2)))
+                          return
+                      }
+
+                      let status = json["status"] as? String ?? ""
+                      let filename = json["filename"] as? String ?? "video.mp4"
+
+                      // tunnel / redirect / stream / success: الرابط المباشر في "url"
+                      if ["tunnel", "redirect", "stream", "success"].contains(status),
+                         let urlString = json["url"] as? String,
+                         let direct = URL(string: urlString) {
+                          completion(.success(ResolvedVideo(url: direct, filename: filename, source: endpoint)))
+                          return
+                      }
+
+                      // picker: عدة ملفات (بوستات انستجرام مثلاً) — خذ أول فيديو
+                      if status == "picker", let picker = json["picker"] as? [[String: Any]] {
+                          let videoItem = picker.first(where: { ($0["type"] as? String) == "video" }) ?? picker.first
+                          if let urlString = videoItem?["url"] as? String, let direct = URL(string: urlString) {
+                              completion(.success(ResolvedVideo(url: direct, filename: filename, source: endpoint)))
+                              return
+                          }
+                      }
+
+                      completion(.failure(NSError(domain: "VideoResolver", code: 3)))
+                  }.resume()
+              }
           }
           EOF
 
@@ -915,7 +1112,7 @@ jobs:
                                       dataPointerOut: &dataPointer
                                   )
                                   guard status == kCMBlockBufferNoErr, let pointer = dataPointer, chunkLength > 0 else { break }
-                                  pcmData.append(UnsafeRawPointer(pointer), count: chunkLength)
+                                  pcmData.append(contentsOf: UnsafeRawBufferPointer(start: pointer, count: chunkLength))
                                   offset += chunkLength
                               }
                           }
@@ -1219,6 +1416,7 @@ jobs:
               @ObservedObject var translationManager: SmartTranslationManager
               @Environment(\.dismiss) var dismiss
               @StateObject private var whisperManager = WhisperManager()
+              @State private var customEndpoint: String = ""
 
               var body: some View {
                   NavigationView {
@@ -1265,6 +1463,30 @@ jobs:
                                   }
                                   .disabled(whisperManager.isDownloading)
                               }
+                          }
+
+                          Section("سيرفر الاستخراج (يوتيوب، تيك توك، انستجرام...)") {
+                              TextField("أضف سيرفر cobalt خاص: https://...", text: $customEndpoint)
+                                  .textInputAutocapitalization(.never)
+                                  .autocorrectionDisabled()
+                                  .font(.caption)
+
+                              Button("إضافة السيرفر") {
+                                  VideoResolver.addCustomEndpoint(customEndpoint)
+                                  customEndpoint = ""
+                              }
+                              .disabled(customEndpoint.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                              ForEach(VideoResolver.resolverEndpoints, id: \.self) { endpoint in
+                                  Text(endpoint)
+                                      .font(.caption2)
+                                      .foregroundColor(.secondary)
+                                      .lineLimit(1)
+                              }
+
+                              Text("💡 لضمان يوتيوب بشكل موثوق: استضف cobalt بنفسك (سطر واحد Docker) ثم أضف رابطه هنا. السيرفرات المجتمعية العامة قد تتوقف في أي وقت.")
+                                  .font(.caption2)
+                                  .foregroundColor(.orange)
                           }
                       }
                       .navigationTitle("إعدادات الترجمة")
