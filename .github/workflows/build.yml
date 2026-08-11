@@ -1149,8 +1149,8 @@ jobs:
                   item.task?.cancel()
                   item.chunked?.cancel()
                   item.chunked = nil
-                  item.hlsTask?.cancel()
-                  item.hlsTask = nil
+                  item.hlsDownloader?.cancel()
+                  item.hlsDownloader = nil
                   DispatchQueue.main.async {
                       item.isDownloading = false
                       item.failedMessage = "تم الإلغاء"
@@ -1242,7 +1242,7 @@ jobs:
                       }
                       DispatchQueue.main.async {
                           if item.isCancelled { return }
-                          // بث HLS (m3u8) → طريقة آبل الرسمية AVAssetDownloadURLSession
+                          // بث HLS (m3u8) → محلل يدوي (آبل شالت AVAssetDownloadURLSession)
                           if mime.contains("mpegurl") || mime.contains("x-mpegurl") ||
                              mediaURL.absoluteString.lowercased().contains(".m3u8") {
                               item.statusText = "تحميل بث HLS…"
@@ -1304,24 +1304,38 @@ jobs:
                   }
               }
 
-              private lazy var hlsSession: AVAssetDownloadURLSession = {
-                  let config = URLSessionConfiguration.background(withIdentifier: "com.yourapp.hls")
-                  config.isDiscretionary = false
-                  return AVAssetDownloadURLSession(configuration: config, delegate: self, delegateQueue: .main)
-              }()
 
-              /// تحميل بث HLS (m3u8) بطريقة آبل الرسمية — بيحفظ حزمة تشتغل في المشغل
+
+              /// تحميل بث HLS (m3u8) بمحلل يدوي — آبل شالت AVAssetDownloadURLSession من SDK الجديد
               private func startHLSDownload(item: DownloadItem, mediaURL: URL) {
                   item.isDownloading = true
                   item.failedMessage = nil
-                  let asset = AVURLAsset(url: mediaURL)
-                  let task = hlsSession.makeAssetDownloadTask(
-                      asset: asset,
-                      assetTitle: item.proposedName.isEmpty ? "video" : item.proposedName,
-                      assetArtworkData: nil,
-                      options: nil)
-                  item.hlsTask = task
-                  task.resume()
+                  do {
+                      let hls = try HLSDownloader(
+                          url: mediaURL,
+                          userAgent: MediaValidator.mobileUA,
+                          onProgress: { [weak item] p in
+                              guard let item = item, !item.isCancelled else { return }
+                              DispatchQueue.main.async {
+                                  item.progress = Float(p)
+                                  item.statusText = String(format: "تحميل HLS… %.0f%%", p * 100)
+                              }
+                          },
+                          onComplete: { [weak self, weak item] result in
+                              guard let self = self, let item = item, !item.isCancelled else { return }
+                              item.hlsDownloader = nil
+                              switch result {
+                              case .success(let tmpURL):
+                                  self.finalizeDownload(item: item, tmpLocation: tmpURL, mime: "video/mp2t")
+                              case .failure:
+                                  self.failOrRetry(item: item, message: "فشل تحميل بث HLS")
+                              }
+                          })
+                      item.hlsDownloader = hls
+                      hls.start()
+                  } catch {
+                      failOrRetry(item: item, message: "تعذر بدء تحميل HLS")
+                  }
               }
 
               // MARK: - إنهاء / فشل
@@ -1432,14 +1446,7 @@ jobs:
 
               func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
                   guard let error = error else { return }
-                  // مهام HLS الفاشلة
-                  if let assetTask = task as? AVAssetDownloadTask {
-                      guard let item = downloads.first(where: { $0.hlsTask == assetTask }) else { return }
-                      if item.isCancelled { return }
-                      if (error as NSError).code == -999 { return }
-                      failOrRetry(item: item, message: error.localizedDescription)
-                      return
-                  }
+
                   guard let downloadTask = task as? URLSessionDownloadTask else { return }
                   guard let item = downloads.first(where: { $0.task == downloadTask }) else { return }
                   if item.isCancelled { return }
@@ -1449,46 +1456,12 @@ jobs:
               }
           }
 
-          extension DownloadManager: AVAssetDownloadDelegate {
-              func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didFinishDownloadingTo location: URL) {
-                  guard let item = downloads.first(where: { $0.hlsTask == assetDownloadTask }) else { return }
-                  if item.isCancelled { return }
-                  let fm = FileManager.default
-                  let name = sanitize(item.proposedName.isEmpty ? "video" : item.proposedName)
-                  let dest = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                      .appendingPathComponent(name + ".movpkg")
-                  try? fm.removeItem(at: dest)
-                  do {
-                      try fm.moveItem(at: location, to: dest)
-                      try? fm.setAttributes([.protectionKey: FileProtectionType.none], ofItemAtPath: dest.path)
-                      item.localURL = dest
-                      item.progress = 1.0
-                      item.isDownloading = false
-                      item.statusText = "تم التحميل ✅"
-                  } catch {
-                      failOrRetry(item: item, message: "تعذر حفظ بث HLS")
-                  }
-              }
-
-              func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didLoad timeRange: CMTimeRange, totalTimeRangesLoaded: [CMTimeRange], timeRangeExpectedToLoad: CMTimeRange) {
-                  guard let item = downloads.first(where: { $0.hlsTask == assetDownloadTask }) else { return }
-                  if item.isCancelled { return }
-                  let loaded = totalTimeRangesLoaded.reduce(0.0) { $0 + $1.duration.seconds }
-                  let total = timeRangeExpectedToLoad.duration.seconds
-                  if total > 0 {
-                      item.progress = Float(min(0.999, loaded / total))
-                      item.isDownloading = true
-                      item.statusText = String(format: "تحميل HLS… %.0f%%", item.progress * 100)
-                  }
-              }
-          }
-
           class DownloadItem: Identifiable, ObservableObject {
               let id = UUID()
               let url: URL
               var task: URLSessionDownloadTask?
               var chunked: ChunkedDownloader?
-              var hlsTask: AVAssetDownloadTask?
+              var hlsDownloader: HLSDownloader?
               var mediaURL: URL?
               var proposedName: String = ""
               var referer: String?
@@ -1621,6 +1594,7 @@ jobs:
                       register { done in workerContender(vid: vid, completion: done) }
                       register { done in pipedContender(vid: vid, completion: done) }
                       register { done in invidiousContender(vid: vid, completion: done) }
+                      register { done in ytDownloadAPIContender(vid: vid, completion: done) }
                   }
 
                   // 3) اكتشاف سيرفرات cobalt الشغّالة تلقائياً وقت التشغيل (cobalt.directory)
@@ -1872,7 +1846,48 @@ jobs:
               ]
 
               private static func pipedContender(vid: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
-                  pipedTry(pipedMirrors, index: 0, vid: vid, completion: completion)
+                  fetchPipedList { mirrors in
+                      let list = mirrors.isEmpty ? pipedMirrors : mirrors
+                      pipedTry(Array(list.prefix(6)), index: 0, vid: vid, completion: completion)
+                  }
+              }
+
+              private static var cachedPiped: [String] = []
+              private static var pipedCacheTime = Date.distantPast
+
+              /// قائمة سيرفرات Piped الحية من piped-instances.kavin.rocks
+              private static func fetchPipedList(completion: @escaping ([String]) -> Void) {
+                  if !cachedPiped.isEmpty, Date().timeIntervalSince(pipedCacheTime) < 600 {
+                      completion(cachedPiped)
+                      return
+                  }
+                  guard let url = URL(string: "https://piped-instances.kavin.rocks/") else {
+                      completion(cachedPiped)
+                      return
+                  }
+                  var req = URLRequest(url: url, timeoutInterval: 10)
+                  req.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+                  URLSession.shared.dataTask(with: req) { data, _, err in
+                      guard let data = data, err == nil,
+                            let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
+                          completion(cachedPiped)
+                          return
+                      }
+                      var out: [String] = []
+                      for entry in arr {
+                          for key in ["api_url", "apiUrl", "url"] {
+                              if let s = entry[key] as? String, s.hasPrefix("https://") {
+                                  out.append(s)
+                                  break
+                              }
+                          }
+                      }
+                      if !out.isEmpty {
+                          cachedPiped = out
+                          pipedCacheTime = Date()
+                      }
+                      completion(out.isEmpty ? cachedPiped : out)
+                  }.resume()
               }
 
               private static func pipedTry(_ mirrors: [String], index: Int, vid: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
@@ -2085,6 +2100,50 @@ jobs:
                           invidiousCacheTime = Date()
                       }
                       completion(out.isEmpty ? cachedInvidious : out)
+                  }.resume()
+              }
+
+              // MARK: - سيرفر عام يرجع MP4 مباشر (youtube-download-api)
+
+              private static let ytDLAPI = "https://youtube-download-api.matheusishiyama.repl.co"
+
+              private static func ytDownloadAPIContender(vid: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+                  let enc = "https://www.youtube.com/watch?v=\(vid)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+                  guard let u = URL(string: ytDLAPI + "/mp4/?url=" + enc) else {
+                      completion(.failure(NSError(domain: "VideoResolver", code: 70)))
+                      return
+                  }
+                  probeStream(u) { ok in
+                      if ok {
+                          completion(.success(ResolvedVideo(url: u, filename: "", sourceLabel: "YT-API", referer: "")))
+                      } else {
+                          completion(.failure(NSError(domain: "VideoResolver", code: 71)))
+                      }
+                  }
+              }
+
+              /// فحص إن الرابط بيقدّم وسائط فعلاً (بيدعم نفس الرابط بدون redirect)
+              private static func probeStream(_ u: URL, completion: @escaping (Bool) -> Void) {
+                  var req = URLRequest(url: u, timeoutInterval: 15)
+                  req.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+                  req.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
+                  URLSession.shared.dataTask(with: req) { data, resp, err in
+                      guard err == nil,
+                            let http = resp as? HTTPURLResponse,
+                            http.statusCode == 200 || http.statusCode == 206 else {
+                          completion(false)
+                          return
+                      }
+                      let ct = (http.mimeType ?? "").lowercased()
+                      if ct.contains("video") || ct.contains("audio") || ct.contains("octet-stream") {
+                          completion(true)
+                          return
+                      }
+                      if let d = data, MediaValidator.looksLikeMedia(d) {
+                          completion(true)
+                          return
+                      }
+                      completion(false)
                   }.resume()
               }
 
@@ -2472,6 +2531,8 @@ jobs:
                   if b[0] == 0x4F, b[1] == 0x67, b[2] == 0x67, b[3] == 0x53 { return true }
                   // FLAC
                   if b[0] == 0x66, b[1] == 0x4C, b[2] == 0x61, b[3] == 0x43 { return true }
+                  // MPEG-TS (شرائح HLS)
+                  if b[0] == 0x47 { return true }
                   return false
               }
           }
@@ -2679,6 +2740,169 @@ jobs:
                   DispatchQueue.main.async { [weak self] in
                       self?.onComplete(.failure(error))
                   }
+              }
+          }
+          EOF
+
+          # ========== Utils/HLSDownloader.swift (محلل HLS يدوي — بديل AVAssetDownloadURLSession) ==========
+          cat > VideoDownloader/Utils/HLSDownloader.swift << 'EOF'
+          import Foundation
+
+          /// منزّل HLS (m3u8) يدوي — آبل شالت AVAssetDownloadURLSession من SDK الجديد:
+          /// يجيب القائمة (master → أفضل جودة)، ينزّل الشرائح بالترتيب، ويدمجها في ملف .ts واحد يشتغل في المشغل
+          class HLSDownloader {
+              private let url: URL
+              private let userAgent: String
+              private let onProgress: (Double) -> Void
+              private let onComplete: (Result<URL, Error>) -> Void
+              private let queue = DispatchQueue(label: "videodownloader.hls")
+              private let tempFileURL: URL
+              private let fileHandle: FileHandle
+              private var isCancelled = false
+              private var segmentURLs: [URL] = []
+              private var doneCount = 0
+
+              init(url: URL, userAgent: String,
+                   onProgress: @escaping (Double) -> Void,
+                   onComplete: @escaping (Result<URL, Error>) -> Void) throws {
+                  self.url = url
+                  self.userAgent = userAgent
+                  self.onProgress = onProgress
+                  self.onComplete = onComplete
+                  let tmp = FileManager.default.temporaryDirectory
+                      .appendingPathComponent("vd_hls_\(UUID().uuidString).ts")
+                  FileManager.default.createFile(atPath: tmp.path, contents: nil)
+                  self.tempFileURL = tmp
+                  self.fileHandle = try FileHandle(forWritingTo: tmp)
+              }
+
+              func start() {
+                  loadPlaylist(url, depth: 0)
+              }
+
+              func cancel() {
+                  queue.async { [weak self] in
+                      guard let self = self else { return }
+                      self.isCancelled = true
+                      try? self.fileHandle.close()
+                      try? FileManager.default.removeItem(at: self.tempFileURL)
+                  }
+              }
+
+              private func finish(_ result: Result<URL, Error>) {
+                  DispatchQueue.main.async { [weak self] in
+                      guard let self = self else { return }
+                      if !self.isCancelled { self.onComplete(result) }
+                  }
+              }
+
+              private func fetchText(_ u: URL, _ done: @escaping (String?) -> Void) {
+                  var req = URLRequest(url: u, timeoutInterval: 30)
+                  req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+                  URLSession.shared.dataTask(with: req) { data, _, err in
+                      guard let data = data, err == nil, let s = String(data: data, encoding: .utf8) else {
+                          done(nil)
+                          return
+                      }
+                      done(s)
+                  }.resume()
+              }
+
+              private func resolve(_ base: URL, _ ref: String) -> URL? {
+                  let trimmed = ref.trimmingCharacters(in: .whitespaces)
+                  if let u = URL(string: trimmed), u.scheme != nil { return u }
+                  return URL(string: trimmed, relativeTo: base)?.absoluteURL
+              }
+
+              private func loadPlaylist(_ u: URL, depth: Int) {
+                  if isCancelled { return }
+                  guard depth < 3 else {
+                      finish(.failure(NSError(domain: "HLSDownloader", code: -1, userInfo: [NSLocalizedDescriptionKey: "قائمة HLS معقدة جداً"])))
+                      return
+                  }
+                  fetchText(u) { [weak self] text in
+                      guard let self = self, let text = text, !self.isCancelled else {
+                          self?.finish(.failure(NSError(domain: "HLSDownloader", code: -2, userInfo: [NSLocalizedDescriptionKey: "تعذر جلب قائمة HLS"])))
+                          return
+                      }
+                      if text.contains("#EXT-X-STREAM-INF") {
+                          // قائمة رئيسية: نختار أعلى جودة (BANDWIDTH)
+                          let lines = text.components(separatedBy: "\n")
+                          var bestBW = -1
+                          var bestURL: URL? = nil
+                          for i in 0..<lines.count {
+                              let l = lines[i].trimmingCharacters(in: .whitespaces)
+                              guard l.hasPrefix("#EXT-X-STREAM-INF") else { continue }
+                              var bw = 0
+                              if let r = l.range(of: "BANDWIDTH=\\d+", options: .regularExpression) {
+                                  bw = Int(l[r].replacingOccurrences(of: "BANDWIDTH=", with: "")) ?? 0
+                              }
+                              var j = i + 1
+                              while j < lines.count {
+                                  let nl = lines[j].trimmingCharacters(in: .whitespaces)
+                                  if !nl.isEmpty && !nl.hasPrefix("#") { break }
+                                  j += 1
+                              }
+                              if j < lines.count, let vu = self.resolve(u, lines[j]) {
+                                  if bw > bestBW { bestBW = bw; bestURL = vu }
+                              }
+                          }
+                          guard let target = bestURL else {
+                              self.finish(.failure(NSError(domain: "HLSDownloader", code: -3, userInfo: [NSLocalizedDescriptionKey: "لا يوجد variant في القائمة"])))
+                              return
+                          }
+                          self.loadPlaylist(target, depth: depth + 1)
+                      } else {
+                          // قائمة وسائط: نستخرج الشرائح بالترتيب
+                          var segs: [URL] = []
+                          for line in text.components(separatedBy: "\n") {
+                              let l = line.trimmingCharacters(in: .whitespaces)
+                              if l.isEmpty || l.hasPrefix("#") { continue }
+                              if let su = self.resolve(u, l) { segs.append(su) }
+                          }
+                          guard !segs.isEmpty else {
+                              self.finish(.failure(NSError(domain: "HLSDownloader", code: -4, userInfo: [NSLocalizedDescriptionKey: "قائمة HLS فاضية"])))
+                              return
+                          }
+                          self.segmentURLs = segs
+                          self.downloadNextSegment(index: 0)
+                      }
+                  }
+              }
+
+              private func downloadNextSegment(index: Int) {
+                  if isCancelled { return }
+                  if index >= segmentURLs.count {
+                      queue.async { [weak self] in
+                          guard let self = self else { return }
+                          try? self.fileHandle.synchronize()
+                          try? self.fileHandle.close()
+                          self.finish(.success(self.tempFileURL))
+                      }
+                      return
+                  }
+                  var req = URLRequest(url: segmentURLs[index], timeoutInterval: 60)
+                  req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+                  URLSession.shared.dataTask(with: req) { [weak self] data, _, err in
+                      guard let self = self else { return }
+                      self.queue.async {
+                          if self.isCancelled { return }
+                          guard let data = data, err == nil, !data.isEmpty else {
+                              self.finish(.failure(NSError(domain: "HLSDownloader", code: -5, userInfo: [NSLocalizedDescriptionKey: "فشل تحميل الجزء \(index + 1)"])))
+                              return
+                          }
+                          do {
+                              try self.fileHandle.write(contentsOf: data)
+                          } catch {
+                              self.finish(.failure(error))
+                              return
+                          }
+                          self.doneCount += 1
+                          let p = Double(self.doneCount) / Double(self.segmentURLs.count)
+                          DispatchQueue.main.async { self.onProgress(min(0.999, p)) }
+                          self.downloadNextSegment(index: index + 1)
+                      }
+                  }.resume()
               }
           }
           EOF
