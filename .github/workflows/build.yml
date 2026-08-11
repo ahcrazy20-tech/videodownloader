@@ -129,6 +129,7 @@ jobs:
               @State private var showPlayer = false
               @State private var showCorruptAlert = false
               @State private var showUnsupportedAlert = false
+              @State private var unsupportedItem: DownloadItem?
 
               var body: some View {
                   NavigationView {
@@ -161,6 +162,7 @@ jobs:
                                       let ext = url.pathExtension.lowercased()
                                       if ext == "webm" || ext == "mkv" {
                                           // مشغل iOS لا يدعم WebM/MKV — رسالة واضحة بدل نافذة سوداء
+                                          unsupportedItem = item
                                           showUnsupportedAlert = true
                                       } else if case .valid = MediaValidator.validateFile(at: url) {
                                           selectedVideo = item
@@ -179,7 +181,7 @@ jobs:
                               }
                           }
                       }
-                      .navigationTitle("المكتبة (\(downloadManager.downloads.count))")
+                      .navigationTitle("المكتبة (\(downloadManager.downloads.count)) — V11")
                       .sheet(isPresented: $showPlayer) {
                           if let video = selectedVideo, let localURL = video.localURL {
                               VideoPlayerView(videoURL: localURL, videoTitle: video.proposedName.isEmpty ? video.url.lastPathComponent : video.proposedName)
@@ -191,9 +193,14 @@ jobs:
                           Text("الملف ده مش وسائط صالحة — احذفه من المكتبة وأعد تحميله.")
                       }
                       .alert("صيغة غير مدعومة", isPresented: $showUnsupportedAlert) {
+                          Button("تحميل الصوت M4A") {
+                              if let item = unsupportedItem {
+                                  downloadManager.audioFallback(for: item)
+                              }
+                          }
                           Button("حسناً", role: .cancel) {}
                       } message: {
-                          Text("الملف بصيغة WebM/MKV ومشغل iOS لا يدعمها. دوس إعادة المحاولة على التحميل — السباق هيجرب سيرفرات بترجع MP4 أو M4A اللي بتشتغل في المشغل.")
+                          Text("الملف بصيغة WebM ومشغل iOS لا يدعمها. تقدر تجيب نسخة صوتية M4A شغّالة فوراً، أو تعيد المحاولة والسباق هيجرب سيرفرات بترجع MP4.")
                       }
                   }
                   .navigationViewStyle(StackNavigationViewStyle())
@@ -1201,6 +1208,7 @@ jobs:
                               item.backendLabel = resolved.sourceLabel
                               item.referer = resolved.referer
                               item.fromResolve = true
+                              item.sourceVid = VideoResolver.extractYouTubeID(item.url.absoluteString)
                               if !resolved.filename.isEmpty { item.proposedName = self.sanitize(resolved.filename) }
                               item.statusText = "جاري التحقق من الرابط…"
                               completion?(true, resolved.sourceLabel)
@@ -1309,6 +1317,7 @@ jobs:
                           })
                       item.chunked = cd
                       cd.start()
+                      self.chunkedWatchdog(item: item)
                   } catch {
                       startPlainDownload(item: item, mediaURL: mediaURL)
                   }
@@ -1345,6 +1354,41 @@ jobs:
                       hls.start()
                   } catch {
                       failOrRetry(item: item, message: "تعذر بدء تحميل HLS")
+                  }
+              }
+
+              /// ساعة أمان: لو التحميل المتقطع وقف عند 100% بدون إنهاء خلال 3 دقايق → وقوع على العادي
+              private func chunkedWatchdog(item: DownloadItem) {
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 180) { [weak self, weak item] in
+                      guard let self = self, let item = item,
+                            item.isDownloading, item.localURL == nil,
+                            !item.isCancelled, item.chunked != nil else { return }
+                      item.chunked?.cancel()
+                      item.chunked = nil
+                      item.statusText = "تحويل للتحميل العادي…"
+                      if let media = item.mediaURL {
+                          self.startPlainDownload(item: item, mediaURL: media)
+                      }
+                  }
+              }
+
+              /// الفيديو نزل WebM غير متوافق؟ نجيب نسخة صوتية M4A تشتغل في المشغل فوراً
+              func audioFallback(for item: DownloadItem) {
+                  guard let vid = item.sourceVid else {
+                      item.statusText = "لا يمكن جلب نسخة صوتية (مش رابط يوتيوب)"
+                      return
+                  }
+                  item.statusText = "جاري جلب نسخة صوتية M4A…"
+                  VideoResolver.y2jarContender(vid: vid) { result in
+                      DispatchQueue.main.async {
+                          switch result {
+                          case .success(let resolved):
+                              let base = item.proposedName.isEmpty ? "audio" : item.proposedName
+                              self.startDownload(url: resolved.url.absoluteString, suggestedName: base + ".m4a")
+                          case .failure:
+                              item.statusText = "تعذر جلب النسخة الصوتية — جرب إعادة المحاولة"
+                          }
+                        }
                   }
               }
 
@@ -1488,6 +1532,7 @@ jobs:
               var proposedName: String = ""
               var referer: String?
               var fromResolve = false
+              var sourceVid: String?
               var retryCount = 0
               var isCancelled = false
 
@@ -1688,7 +1733,7 @@ jobs:
 
               // MARK: - y2jar (الأسرع: يرجع ستريم يوتيوب الأصلي M4A بدون تحويل)
 
-              private static func y2jarContender(vid: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+              static func y2jarContender(vid: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
                   guard let infoURL = URL(string: y2jarInfoURL + vid) else {
                       completion(.failure(NSError(domain: "VideoResolver", code: 10)))
                       return
@@ -3329,7 +3374,7 @@ jobs:
                           }
 
                           Section {
-                              Text("إصدار محرك التحميل: V10 — لو مش شايف النص ده في التطبيق المثبت على جهازك، فأنت بتثبّت نسخة قديمة: انسخ build.yml الجديد للريبتو، شغّل الـ workflow من جديد، وامسح التطبيق القديم قبل التثبيت.")
+                              Text("إصدار محرك التحميل: V11 — لو مش شايف النص ده في التطبيق المثبت على جهازك، فأنت بتثبّت نسخة قديمة: انسخ build.yml الجديد للريبتو، شغّل الـ workflow من جديد، وامسح التطبيق القديم قبل التثبيت.")
                                   .font(.caption2)
                                   .foregroundColor(.secondary)
                           }
