@@ -57,6 +57,7 @@ jobs:
           struct ContentView: View {
               @StateObject private var downloadManager = DownloadManager()
               @StateObject private var translationManager = SmartTranslationManager()
+              @StateObject private var webState = WebViewState()
               @State private var urlString: String = "https://www.youtube.com"
               @State private var loadTrigger: Int = 0
               @State private var showDownloads = false
@@ -73,8 +74,12 @@ jobs:
                               .textFieldStyle(.roundedBorder)
                               .textInputAutocapitalization(.never)
                               .disableAutocorrection(true)
-                              .onSubmit { loadTrigger += 1 }
+                              .onSubmit {
+                                  urlString = normalizedURL(urlString)
+                                  loadTrigger += 1
+                              }
                           Button("ذهاب") {
+                              urlString = normalizedURL(urlString)
                               loadTrigger += 1
                           }
                           .buttonStyle(.borderedProminent)
@@ -95,8 +100,44 @@ jobs:
                       .padding(.horizontal)
                       .padding(.top, 8)
 
+                      // شريط التنقل: رجوع / تقدم / تحديث أو إيقاف
+                      HStack(spacing: 24) {
+                          Button { webState.goBack() } label: {
+                              Image(systemName: "chevron.left").font(.title3)
+                          }
+                          .disabled(!webState.canGoBack)
+                          .opacity(webState.canGoBack ? 1 : 0.35)
+
+                          Button { webState.goForward() } label: {
+                              Image(systemName: "chevron.right").font(.title3)
+                          }
+                          .disabled(!webState.canGoForward)
+                          .opacity(webState.canGoForward ? 1 : 0.35)
+
+                          Spacer()
+
+                          if webState.isLoading {
+                              Button { webState.stop() } label: {
+                                  Image(systemName: "xmark").font(.title3)
+                              }
+                          } else {
+                              Button { webState.reload() } label: {
+                                  Image(systemName: "arrow.clockwise").font(.title3)
+                              }
+                          }
+                      }
+                      .padding(.horizontal)
+                      .padding(.vertical, 6)
+                      .background(.thinMaterial)
+
+                      // شريط تقدم التحميل
+                      if webState.isLoading {
+                          ProgressView(value: webState.progress)
+                              .tint(.blue)
+                      }
+
                       // WebView — التحميل يتم فقط عند الضغط على "ذهاب" (loadTrigger)
-                      WebView(urlString: $urlString, loadTrigger: $loadTrigger, downloadManager: downloadManager)
+                      WebView(urlString: $urlString, loadTrigger: $loadTrigger, state: webState, downloadManager: downloadManager)
                           .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                       // شريط الأدوات السفلي
@@ -149,6 +190,18 @@ jobs:
                   }
               }
 
+              /// ينظم الرابط: يضيف https:// أو يحوّل النص العادي إلى بحث جوجل
+              private func normalizedURL(_ raw: String) -> String {
+                  let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                  guard !trimmed.isEmpty else { return trimmed }
+                  if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") { return trimmed }
+                  if trimmed.contains("."), !trimmed.contains(" ") {
+                      return "https://" + trimmed
+                  }
+                  let query = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? trimmed
+                  return "https://www.google.com/search?q=" + query
+              }
+
               /// التحميل الذكي: يستخدم سيرفرات الاستخراج لتحويل رابط المنصة إلى ملف مباشر
               private func smartDownload() {
                   guard !isResolving else { return }
@@ -172,7 +225,7 @@ jobs:
           }
           EOF
 
-          # ========== Views/DownloadsListView.swift ==========
+          # ========== Views/DownloadsListView.swift (صف محسّن: حالة + إلغاء + إعادة محاولة) ==========
           cat > VideoDownloader/Views/DownloadsListView.swift << 'EOF'
           import SwiftUI
 
@@ -186,21 +239,25 @@ jobs:
                   NavigationView {
                       List {
                           ForEach(Array(downloadManager.downloads.enumerated()), id: \.element.id) { index, item in
-                              DownloadRow(item: item)
-                                  .contentShape(Rectangle())
-                                  .onTapGesture {
-                                      if !item.isDownloading, item.localURL != nil {
-                                          selectedVideo = item
-                                          showPlayer = true
-                                      }
+                              DownloadRow(
+                                  item: item,
+                                  onCancel: { downloadManager.cancelDownload(item) },
+                                  onRetry: { downloadManager.retryDownload(item) }
+                              )
+                              .contentShape(Rectangle())
+                              .onTapGesture {
+                                  if !item.isDownloading, item.localURL != nil {
+                                      selectedVideo = item
+                                      showPlayer = true
                                   }
-                                  .swipeActions {
-                                      Button(role: .destructive) {
-                                          downloadManager.deleteVideo(at: index)
-                                      } label: {
-                                          Label("حذف", systemImage: "trash")
-                                      }
+                              }
+                              .swipeActions {
+                                  Button(role: .destructive) {
+                                      downloadManager.deleteVideo(at: index)
+                                  } label: {
+                                      Label("حذف", systemImage: "trash")
                                   }
+                              }
                           }
                       }
                       .navigationTitle("التحميلات")
@@ -209,33 +266,85 @@ jobs:
                       }
                       .sheet(isPresented: $showPlayer) {
                           if let video = selectedVideo, let localURL = video.localURL {
-                              VideoPlayerView(videoURL: localURL, videoTitle: video.url.lastPathComponent)
+                              VideoPlayerView(videoURL: localURL, videoTitle: video.proposedName.isEmpty ? video.url.lastPathComponent : video.proposedName)
                           }
                       }
                   }
               }
           }
 
-          // صف منفصل بـ ObservedObject حتى يتحدث شريط التقدم فعلياً أثناء التحميل
+          /// صف التحميل: حالة + تقدم + إلغاء + إعادة محاولة (مستوحى من تطبيق الموسيقى)
           struct DownloadRow: View {
               @ObservedObject var item: DownloadItem
+              let onCancel: () -> Void
+              let onRetry: () -> Void
+
+              private var displayName: String {
+                  if !item.proposedName.isEmpty { return item.proposedName }
+                  return item.url.lastPathComponent
+              }
+
+              private var icon: (name: String, color: Color) {
+                  if item.isDownloading { return ("arrow.down.circle", .blue) }
+                  if item.localURL != nil { return ("checkmark.circle", .green) }
+                  if item.failedMessage != nil { return ("exclamationmark.circle", .red) }
+                  return ("clock", .secondary)
+              }
 
               var body: some View {
-                  HStack {
-                      Image(systemName: item.isDownloading ? "arrow.down.circle" : "checkmark.circle")
-                          .foregroundColor(item.isDownloading ? .blue : .green)
-                      Text(item.url.lastPathComponent)
-                          .lineLimit(1)
-                      Spacer()
+                  VStack(alignment: .leading, spacing: 6) {
+                      HStack(spacing: 8) {
+                          Image(systemName: icon.name)
+                              .foregroundColor(icon.color)
+                          Text(displayName)
+                              .lineLimit(1)
+                          Spacer()
+                          if !item.backendLabel.isEmpty {
+                              Text(item.backendLabel)
+                                  .font(.system(size: 9, weight: .black))
+                                  .padding(.horizontal, 5)
+                                  .padding(.vertical, 2)
+                                  .background(Color.blue.opacity(0.15))
+                                  .foregroundColor(.blue)
+                                  .cornerRadius(4)
+                          }
+                      }
+
                       if item.isDownloading {
-                          ProgressView(value: item.progress)
-                              .frame(width: 60)
-                      } else if item.progress >= 1.0, item.localURL != nil {
-                          Image(systemName: "play.circle.fill")
-                              .foregroundColor(.blue)
-                              .font(.title2)
+                          HStack(spacing: 8) {
+                              ProgressView(value: item.progress)
+                              Text(String(format: "%.0f%%", item.progress * 100))
+                                  .font(.caption2)
+                                  .foregroundColor(.secondary)
+                              Button(action: onCancel) {
+                                  Image(systemName: "xmark.circle.fill")
+                                      .foregroundColor(.red)
+                              }
+                              .buttonStyle(.plain)
+                          }
+                      } else if item.failedMessage != nil {
+                          HStack(spacing: 8) {
+                              Text(item.statusText)
+                                  .font(.caption2)
+                                  .foregroundColor(.red)
+                                  .lineLimit(1)
+                              Spacer()
+                              Button("إعادة المحاولة", action: onRetry)
+                                  .font(.caption2)
+                                  .padding(.horizontal, 8)
+                                  .padding(.vertical, 3)
+                                  .background(Color.blue)
+                                  .foregroundColor(.white)
+                                  .cornerRadius(5)
+                          }
+                      } else {
+                          Text(item.statusText)
+                              .font(.caption2)
+                              .foregroundColor(.secondary)
+                              .lineLimit(1)
                       }
                   }
+                  .padding(.vertical, 2)
               }
           }
           EOF
@@ -501,14 +610,29 @@ jobs:
           }
           EOF
 
-          # ========== Views/WebView.swift (إصلاح: مرجع webView + منع حلقة إعادة التحميل) ==========
+          # ========== Views/WebView.swift (مطور: شريط تقدم + تنقل + تحميل تلقائي للوسائط) ==========
           cat > VideoDownloader/Views/WebView.swift << 'EOF'
           import SwiftUI
           import WebKit
 
+          /// حالة الـ WebView (تحميل، تقدم، رجوع/تقدم) كـ ObservableObject لتظهر في SwiftUI
+          class WebViewState: ObservableObject {
+              @Published var isLoading = false
+              @Published var progress: Double = 0.0
+              @Published var canGoBack = false
+              @Published var canGoForward = false
+              weak var webView: WKWebView?
+
+              func goBack() { webView?.goBack() }
+              func goForward() { webView?.goForward() }
+              func reload() { webView?.reload() }
+              func stop() { webView?.stopLoading() }
+          }
+
           struct WebView: UIViewRepresentable {
               @Binding var urlString: String
               @Binding var loadTrigger: Int
+              @ObservedObject var state: WebViewState
               var downloadManager: DownloadManager?
 
               func makeUIView(context: Context) -> WKWebView {
@@ -523,7 +647,8 @@ jobs:
                   let webView = WKWebView(frame: .zero, configuration: config)
                   webView.navigationDelegate = context.coordinator
                   webView.allowsBackForwardNavigationGestures = true
-                  context.coordinator.webView = webView
+                  context.coordinator.attach(to: webView)
+                  state.webView = webView
 
                   if let url = URL(string: urlString) {
                       webView.load(URLRequest(url: url))
@@ -550,6 +675,7 @@ jobs:
                   var parent: WebView
                   weak var webView: WKWebView?
                   var lastLoadTrigger = 0
+                  private var observations: [NSKeyValueObservation] = []
 
                   init(_ parent: WebView) {
                       self.parent = parent
@@ -566,6 +692,44 @@ jobs:
                       NotificationCenter.default.removeObserver(self)
                   }
 
+                  /// ربط حالة الـ WebView بواجهة SwiftUI عبر KVO (تقدم، تحميل، رجوع/تقدم)
+                  func attach(to webView: WKWebView) {
+                      self.webView = webView
+                      let state = parent.state
+                      observations = [
+                          webView.observe(\.estimatedProgress, options: [.new]) { wv, _ in
+                              let value = wv.estimatedProgress
+                              DispatchQueue.main.async { state.progress = value }
+                          },
+                          webView.observe(\.isLoading, options: [.new]) { wv, _ in
+                              let value = wv.isLoading
+                              DispatchQueue.main.async { state.isLoading = value }
+                          },
+                          webView.observe(\.canGoBack, options: [.new]) { wv, _ in
+                              let value = wv.canGoBack
+                              DispatchQueue.main.async { state.canGoBack = value }
+                          },
+                          webView.observe(\.canGoForward, options: [.new]) { wv, _ in
+                              let value = wv.canGoForward
+                              DispatchQueue.main.async { state.canGoForward = value }
+                          }
+                      ]
+                  }
+
+                  // أي لينك ملف وسائط مباشر يتحول لتحميل تلقائي بدلاً من فتحه في المتصفح
+                  func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                      if navigationAction.navigationType == .linkActivated,
+                         let url = navigationAction.request.url,
+                         VideoResolver.isDirectMediaURL(url.absoluteString) {
+                          DispatchQueue.main.async {
+                              NotificationCenter.default.post(name: .videoURLFound, object: url.absoluteString)
+                          }
+                          decisionHandler(.cancel)
+                          return
+                      }
+                      decisionHandler(.allow)
+                  }
+
                   @objc func extractVideos() {
                       guard let webView = webView else { return }
                       let jsCode = """
@@ -573,7 +737,7 @@ jobs:
                           var urls = [];
                           var videos = document.getElementsByTagName('video');
                           for (var i = 0; i < videos.length; i++) {
-                              var src = videos[i].src;
+                              var src = videos[i].src || videos[i].currentSrc;
                               if (src && src.startsWith('http')) urls.push(src);
                               var sources = videos[i].getElementsByTagName('source');
                               for (var j = 0; j < sources.length; j++) {
@@ -603,100 +767,342 @@ jobs:
                           }
                       }
                   }
+
+                  func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+                      DispatchQueue.main.async { self.parent.state.isLoading = false }
+                  }
+
+                  func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+                      DispatchQueue.main.async { self.parent.state.isLoading = false }
+                  }
               }
           }
           EOF
 
-          # ========== Managers/DownloadManager.swift ==========
+          # ========== Managers/DownloadManager.swift (محرك التحميل v2 — مستوحى من تطبيق الموسيقى) ==========
           cat > VideoDownloader/Managers/DownloadManager.swift << 'EOF'
           import SwiftUI
 
+          /// مدير التحميل — نفس فلسفة DownloadCenter في تطبيق الموسيقى:
+          /// سباق متوازٍ للسيرفرات + تحقق من الملفات + إعادة محاولة + تحميل متقطع متوازٍ
           class DownloadManager: NSObject, ObservableObject {
               @Published var downloads: [DownloadItem] = []
               private var session: URLSession!
+
+              // إعدادات التحميل المتقطع المتوازي (للملفات الكبيرة)
+              private let chunkedThreshold: Int64 = 5_000_000   // أكبر من 5 ميجا
+              private let chunkedChunkSize: Int = 2_000_000     // 2 ميجا لكل قطعة
+              private let chunkedConnections = 6
 
               override init() {
                   super.init()
                   let config = URLSessionConfiguration.background(withIdentifier: "com.yourapp.download")
                   config.isDiscretionary = false
+                  config.timeoutIntervalForRequest = 300        // 5 دقايق بين البايتات (نت بطيء)
+                  config.timeoutIntervalForResource = 7200      // ساعتين للملفات الضخمة
+                  config.httpMaximumConnectionsPerHost = 8
+                  config.shouldUseExtendedBackgroundIdleMode = true
+                  config.requestCachePolicy = .reloadIgnoringLocalCacheData
                   session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
               }
 
-              func startDownload(url: String) {
-                  guard let url = URL(string: url) else { return }
-                  if downloads.contains(where: { $0.url == url && $0.isDownloading }) { return }
+              // MARK: - Public API
+
+              /// تحميل مباشر (من المتصفح أو رابط وسائط مباشر)
+              func startDownload(url urlString: String) {
+                  guard let url = URL(string: urlString) else { return }
+                  // منع التكرار: شغال بالفعل أو مكتمل
+                  if downloads.contains(where: { ($0.mediaURL == url || $0.url == url) && ($0.isDownloading || $0.localURL != nil) }) { return }
 
                   let item = DownloadItem(url: url)
-                  item.isDownloading = true
-                  DispatchQueue.main.async { self.downloads.append(item) }
-
-                  let task = session.downloadTask(with: url)
-                  task.resume()
-                  item.task = task
+                  item.mediaURL = url
+                  item.proposedName = sanitize(url.lastPathComponent.isEmpty ? "video" : url.lastPathComponent)
+                  DispatchQueue.main.async { self.downloads.insert(item, at: 0) }
+                  beginMediaDownload(item: item, mediaURL: url)
               }
 
-              /// تحميل ذكي: رابط مباشر ← سيرفرات الاستخراج (cobalt) ← رسالة إرشادية
-              /// يدعم يوتيوب، تيك توك، انستجرام، تويتر، فيسبوك وغيرها
+              /// تحميل ذكي: استخراج رابط الصفحة عبر سيرفرات cobalt (سباق متوازٍ) ثم تحميل الملف
               func startSmartDownload(pageURL: String, completion: ((Bool, String?) -> Void)? = nil) {
-                  // 1) لو الرابط ملف وسائط مباشر — حمّله فوراً
+                  // رابط وسائط مباشر؟ وفّر الاستخراج وحمّل فوراً
                   if VideoResolver.isDirectMediaURL(pageURL) {
                       startDownload(url: pageURL)
                       completion?(true, nil)
                       return
                   }
 
-                  // 2) حلّل الرابط عبر سيرفرات متوافقة مع cobalt (واحد ورا التاني)
-                  VideoResolver.resolve(pageURL: pageURL) { result in
-                      DispatchQueue.main.async {
-                          switch result {
-                          case .success(let resolved):
-                              self.startDownload(url: resolved.url.absoluteString)
-                              completion?(true, resolved.source)
-                          case .failure:
-                              completion?(false, "لم يتمكن أي سيرفر من استخراج الرابط. جرب زر استخراج فيديوهات داخل المتصفح، أو أضف سيرفر cobalt خاص بك من الإعدادات لضمان يوتيوب.")
-                          }
-                      }
+                  guard let pageUrl = URL(string: pageURL) else {
+                      completion?(false, "الرابط غير صالح")
+                      return
+                  }
+
+                  let item = DownloadItem(url: pageUrl)
+                  item.statusText = "جاري استخراج الرابط…"
+                  DispatchQueue.main.async { self.downloads.insert(item, at: 0) }
+                  resolveItem(item, completion: completion)
+              }
+
+              func cancelDownload(_ item: DownloadItem) {
+                  item.isCancelled = true
+                  item.task?.cancel()
+                  item.chunked?.cancel()
+                  item.chunked = nil
+                  DispatchQueue.main.async {
+                      item.isDownloading = false
+                      item.failedMessage = "تم الإلغاء"
+                      item.statusText = "تم الإلغاء"
+                  }
+              }
+
+              func retryDownload(_ item: DownloadItem) {
+                  item.isCancelled = false
+                  item.failedMessage = nil
+                  item.retryCount = 0
+                  item.progress = 0
+                  if let media = item.mediaURL {
+                      beginMediaDownload(item: item, mediaURL: media)
+                  } else {
+                      resolveItem(item, completion: nil)
                   }
               }
 
               func deleteVideo(at index: Int) {
                   let item = downloads[index]
+                  cancelDownload(item)
                   if let localURL = item.localURL {
                       try? FileManager.default.removeItem(at: localURL)
                   }
                   downloads.remove(at: index)
               }
+
+              // MARK: - مرحلة الاستخراج
+
+              private func resolveItem(_ item: DownloadItem, completion: ((Bool, String?) -> Void)?) {
+                  item.statusText = "جاري استخراج الرابط…"
+                  VideoResolver.resolve(pageURL: item.url.absoluteString) { result in
+                      DispatchQueue.main.async {
+                          if item.isCancelled { return }
+                          switch result {
+                          case .success(let resolved):
+                              item.mediaURL = resolved.url
+                              item.backendLabel = resolved.sourceLabel
+                              if !resolved.filename.isEmpty { item.proposedName = self.sanitize(resolved.filename) }
+                              item.statusText = "جاري التحقق من الرابط…"
+                              completion?(true, resolved.sourceLabel)
+                              MediaValidator.probe(url: resolved.url) { ok in
+                                  DispatchQueue.main.async {
+                                      if item.isCancelled { return }
+                                      if ok {
+                                          self.beginMediaDownload(item: item, mediaURL: resolved.url)
+                                      } else {
+                                          self.failOrRetry(item: item, message: "الرابط المستخرج غير صالح")
+                                      }
+                                  }
+                              }
+                          case .failure:
+                              completion?(false, "لم يتمكن أي سيرفر من استخراج الرابط. جرب زر استخراج فيديوهات داخل المتصفح، أو أضف سيرفر cobalt خاص من الإعدادات.")
+                              self.failOrRetry(item: item, message: "فشل الاستخراج")
+                          }
+                      }
+                  }
+              }
+
+              // MARK: - مرحلة التحميل
+
+              private func beginMediaDownload(item: DownloadItem, mediaURL: URL) {
+                  if item.isCancelled { return }
+                  item.isDownloading = true
+                  item.failedMessage = nil
+                  item.progress = 0
+                  item.statusText = "جاري قياس حجم الملف…"
+
+                  // probe صغير لمعرفة الحجم → تحميل متوازٍ متقطع أو عادي
+                  var probe = URLRequest(url: mediaURL, timeoutInterval: 20)
+                  probe.setValue(MediaValidator.mobileUA, forHTTPHeaderField: "User-Agent")
+                  probe.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
+
+                  URLSession.shared.dataTask(with: probe) { data, resp, err in
+                      var total: Int64 = 0
+                      if let hr = resp as? HTTPURLResponse {
+                          if let cr = (hr.allHeaderFields["Content-Range"] as? String) ?? (hr.allHeaderFields["content-range"] as? String),
+                             let slash = cr.lastIndex(of: "/") {
+                              total = Int64(String(cr[cr.index(after: slash)...])) ?? 0
+                          }
+                          if total == 0, let cl = hr.allHeaderFields["Content-Length"] as? String {
+                              total = Int64(cl) ?? 0
+                          }
+                      }
+                      DispatchQueue.main.async {
+                          if item.isCancelled { return }
+                          if err == nil, total > self.chunkedThreshold {
+                              item.statusText = "تحميل سريع متوازٍ…"
+                              self.startChunkedDownload(item: item, mediaURL: mediaURL, totalBytes: total)
+                          } else {
+                              item.statusText = "جاري التحميل…"
+                              self.startPlainDownload(item: item, mediaURL: mediaURL)
+                          }
+                      }
+                  }.resume()
+              }
+
+              private func startPlainDownload(item: DownloadItem, mediaURL: URL) {
+                  var req = URLRequest(url: mediaURL, timeoutInterval: 1800)
+                  req.setValue(MediaValidator.mobileUA, forHTTPHeaderField: "User-Agent")
+                  req.setValue("*/*", forHTTPHeaderField: "Accept")
+
+                  let task = session.downloadTask(with: req)
+                  item.task = task
+                  task.resume()
+              }
+
+              private func startChunkedDownload(item: DownloadItem, mediaURL: URL, totalBytes: Int64) {
+                  do {
+                      let cd = try ChunkedDownloader(
+                          url: mediaURL,
+                          referer: "",
+                          userAgent: MediaValidator.mobileUA,
+                          totalBytes: totalBytes,
+                          chunkSize: chunkedChunkSize,
+                          connections: chunkedConnections,
+                          onProgress: { [weak item] p in
+                              guard let item = item, !item.isCancelled else { return }
+                              DispatchQueue.main.async {
+                                  item.progress = Float(p)
+                                  item.statusText = String(format: "تحميل سريع… %.0f%%", p * 100)
+                              }
+                          },
+                          onComplete: { [weak self, weak item] result in
+                              guard let self = self, let item = item else { return }
+                              if item.isCancelled { return }
+                              item.chunked = nil
+                              switch result {
+                              case .success(let tmpURL):
+                                  self.finalizeDownload(item: item, tmpLocation: tmpURL, mime: nil)
+                              case .failure:
+                                  // التحميل المتوازي فشل → وقوع على التحميل العادي
+                                  self.startPlainDownload(item: item, mediaURL: mediaURL)
+                              }
+                          })
+                      item.chunked = cd
+                      cd.start()
+                  } catch {
+                      startPlainDownload(item: item, mediaURL: mediaURL)
+                  }
+              }
+
+              // MARK: - إنهاء / فشل
+
+              private func finalizeDownload(item: DownloadItem, tmpLocation: URL, mime: String?) {
+                  let fm = FileManager.default
+                  // التحقق من الملف (magic bytes + الحجم) — يمنع حفظ صفحات الخطأ
+                  if case .failed(let message) = MediaValidator.validateFile(at: tmpLocation) {
+                      try? fm.removeItem(at: tmpLocation)
+                      failOrRetry(item: item, message: message)
+                      return
+                  }
+
+                  // اسم نظيف + إضافة الامتداد لو ناقص
+                  var name = item.proposedName.isEmpty ? "video" : item.proposedName
+                  if !hasKnownMediaExtension(name) {
+                      let m = (mime ?? "").lowercased()
+                      if m.contains("mp4") || m.contains("m4v") { name += ".mp4" }
+                      else if m.contains("webm") { name += ".webm" }
+                      else if m.contains("quicktime") { name += ".mov" }
+                      else if m.contains("mpeg") || m.contains("mp3") { name += ".mp3" }
+                      else { name += ".mp4" }
+                  }
+                  name = sanitize(name)
+
+                  let destDir = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                  var destPath = destDir.appendingPathComponent(name)
+                  if fm.fileExists(atPath: destPath.path) {
+                      let stem = (name as NSString).deletingPathExtension
+                      let ext = (name as NSString).pathExtension
+                      var i = 2
+                      while fm.fileExists(atPath: destPath.path) {
+                          destPath = destDir.appendingPathComponent(ext.isEmpty ? "\(stem) \(i)" : "\(stem) \(i).\(ext)")
+                          i += 1
+                      }
+                  }
+                  try? fm.removeItem(at: destPath)
+                  do {
+                      try fm.moveItem(at: tmpLocation, to: destPath)
+                      try? fm.setAttributes([.protectionKey: FileProtectionType.none], ofItemAtPath: destPath.path)
+                  } catch {
+                      failOrRetry(item: item, message: "تعذر حفظ الملف")
+                      return
+                  }
+
+                  item.localURL = destPath
+                  item.progress = 1.0
+                  item.isDownloading = false
+                  item.statusText = "تم التحميل ✅"
+                  if item.proposedName.isEmpty { item.proposedName = destPath.lastPathComponent }
+              }
+
+              /// إعادة محاولة تلقائية حتى 3 مرات (زي تطبيق الموسيقى بالظبط)
+              private func failOrRetry(item: DownloadItem, message: String) {
+                  if item.isCancelled { return }
+                  item.task = nil
+                  if item.retryCount < 3 {
+                      item.retryCount += 1
+                      item.isDownloading = false
+                      item.statusText = "إعادة المحاولة \(item.retryCount)/3…"
+                      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self, weak item] in
+                          guard let self = self, let item = item, !item.isCancelled else { return }
+                          if let media = item.mediaURL {
+                              self.beginMediaDownload(item: item, mediaURL: media)
+                          } else {
+                              self.resolveItem(item, completion: nil)
+                          }
+                      }
+                  } else {
+                      item.isDownloading = false
+                      item.failedMessage = message
+                      item.statusText = "فشل: \(message)"
+                  }
+              }
+
+              private func hasKnownMediaExtension(_ name: String) -> Bool {
+                  let exts = ["mp4", "m4v", "mov", "webm", "mkv", "avi", "m4a", "mp3", "aac", "ts", "flv"]
+                  let low = name.lowercased()
+                  return exts.contains { low.hasSuffix("." + $0) }
+              }
+
+              private func sanitize(_ s: String) -> String {
+                  var out = s.replacingOccurrences(of: "/", with: "-")
+                  let invalid = CharacterSet(charactersIn: "\\:*?\"<>|")
+                  out = out.components(separatedBy: invalid).joined(separator: "-")
+                  out = out.trimmingCharacters(in: .whitespacesAndNewlines)
+                  return out.isEmpty ? "video" : out
+              }
           }
 
           extension DownloadManager: URLSessionDownloadDelegate {
               func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-                  let fileManager = FileManager.default
-                  let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
-                  let fileName = downloadTask.originalRequest?.url?.lastPathComponent ?? "video_\(Date().timeIntervalSince1970).mp4"
-                  let destinationURL = documentsURL.appendingPathComponent(fileName)
-
-                  do {
-                      if fileManager.fileExists(atPath: destinationURL.path) { try fileManager.removeItem(at: destinationURL) }
-                      try fileManager.moveItem(at: location, to: destinationURL)
-                      DispatchQueue.main.async {
-                          if let index = self.downloads.firstIndex(where: { $0.task == downloadTask }) {
-                              self.downloads[index].isDownloading = false
-                              self.downloads[index].progress = 1.0
-                              self.downloads[index].localURL = destinationURL
-                          }
-                      }
-                  } catch { print("فشل حفظ الملف: \(error)") }
+                  guard let item = downloads.first(where: { $0.task == downloadTask }) else { return }
+                  if item.isCancelled { return }
+                  let mime = (downloadTask.response as? HTTPURLResponse)?.mimeType
+                  finalizeDownload(item: item, tmpLocation: location, mime: mime)
               }
 
               func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
                   guard totalBytesExpectedToWrite > 0 else { return }
-                  let progress = Float(totalBytesWritten) / Float(totalBytesExpectedToWrite)
-                  DispatchQueue.main.async {
-                      if let index = self.downloads.firstIndex(where: { $0.task == downloadTask }) {
-                          self.downloads[index].progress = progress
-                          self.downloads[index].isDownloading = true
-                      }
-                  }
+                  guard let item = downloads.first(where: { $0.task == downloadTask }) else { return }
+                  if item.isCancelled { return }
+                  let p = Float(totalBytesWritten) / Float(totalBytesExpectedToWrite)
+                  item.progress = p
+                  item.isDownloading = true
+                  item.statusText = String(format: "جاري التحميل… %.0f%%", p * 100)
+              }
+
+              func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+                  guard let error = error else { return }
+                  guard let downloadTask = task as? URLSessionDownloadTask else { return }
+                  guard let item = downloads.first(where: { $0.task == downloadTask }) else { return }
+                  if item.isCancelled { return }
+                  // -999 = إلغاء مقصود
+                  if (error as NSError).code == -999 { return }
+                  failOrRetry(item: item, message: error.localizedDescription)
               }
           }
 
@@ -704,31 +1110,39 @@ jobs:
               let id = UUID()
               let url: URL
               var task: URLSessionDownloadTask?
+              var chunked: ChunkedDownloader?
+              var mediaURL: URL?
+              var proposedName: String = ""
+              var retryCount = 0
+              var isCancelled = false
+
               @Published var progress: Float = 0.0
               @Published var isDownloading: Bool = false
               @Published var localURL: URL?
+              @Published var statusText: String = "في الانتظار"
+              @Published var backendLabel: String = ""
+              @Published var failedMessage: String?
 
               init(url: URL) { self.url = url }
           }
           EOF
 
-          # ========== Managers/VideoResolver.swift (جديد: تحميل من أي منصة — يوتيوب، تيك توك، انستجرام...) ==========
+          # ========== Managers/VideoResolver.swift (سباق متوازٍ: أول سيرفر ينجح يكسب) ==========
           cat > VideoDownloader/Managers/VideoResolver.swift << 'EOF'
           import Foundation
 
-          /// محرك الاستخراج الذكي: يحوّل رابط أي منصة إلى رابط تحميل مباشر
-          /// يعتمد على سيرفرات متوافقة مع cobalt (https://github.com/imputnet/cobalt)
-          /// القائمة المجتمعية تتغير باستمرار: https://instances.cobalt.best
+          /// محرك الاستخراج الذكي — بنفس فكرة الـ Fast Race في تطبيق الموسيقى:
+          /// كل السيرفرات تشتغل مع بعض في نفس اللحظة، وأول واحد يرجع رابط صالح يكسب
           class VideoResolver {
               struct ResolvedVideo {
                   let url: URL
                   let filename: String
-                  let source: String
+                  let sourceLabel: String
               }
 
               private static let defaultsKey = "customResolverEndpoints"
 
-              /// سيرفرات مجتمعية عامة تعمل حالياً (قد تتوقف — يُفضّل استضافة سيرفرك الخاص)
+              /// سيرفرات مجتمعية عامة (القائمة من instances.cobalt.best — قد تتغير)
               static let defaultEndpoints: [String] = [
                   "https://cobalt-api.meowing.de/",
                   "https://cobalt-backend.canine.tools/",
@@ -736,7 +1150,7 @@ jobs:
                   "https://kityune.imput.net/"
               ]
 
-              /// السيرفرات المستخدمة: الخاص بالمستخدم أولاً ثم الافتراضية
+              /// سيرفرات المستخدم الخاص أولاً ثم الافتراضية
               static var resolverEndpoints: [String] {
                   let custom = UserDefaults.standard.stringArray(forKey: defaultsKey) ?? []
                   return custom + defaultEndpoints
@@ -764,33 +1178,45 @@ jobs:
                   return extensions.contains { lower.contains($0) }
               }
 
-              /// جرّب كل السيرفرات بالترتيب حتى ينجح واحد
+              /// ⚡ السباق المتوازي: جرّب كل السيرفرات في نفس اللحظة — أول نجاح يفوز
               static func resolve(pageURL: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
                   let endpoints = resolverEndpoints
                   guard !endpoints.isEmpty else {
                       completion(.failure(NSError(domain: "VideoResolver", code: -1, userInfo: [NSLocalizedDescriptionKey: "لا توجد سيرفرات استخراج"])))
                       return
                   }
-                  tryEndpoints(endpoints, pageURL: pageURL, index: 0, completion: completion)
-              }
 
-              private static func tryEndpoints(_ endpoints: [String], pageURL: String, index: Int, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
-                  guard index < endpoints.count else {
-                      completion(.failure(NSError(domain: "VideoResolver", code: -2, userInfo: [NSLocalizedDescriptionKey: "فشلت جميع سيرفرات الاستخراج"])))
-                      return
-                  }
-                  requestEndpoint(endpoints[index], pageURL: pageURL) { result in
-                      switch result {
-                      case .success:
-                          completion(result)
-                      case .failure:
-                          tryNext(endpoints, pageURL: pageURL, index: index + 1, completion: completion)
+                  let lock = NSLock()
+                  var resolved = false
+                  var failedCount = 0
+
+                  for endpoint in endpoints {
+                      requestEndpoint(endpoint, pageURL: pageURL) { result in
+                          lock.lock()
+                          let alreadyResolved = resolved
+                          if case .success = result { resolved = true }
+                          if case .failure = result { failedCount += 1 }
+                          let allFailed = failedCount >= endpoints.count
+                          lock.unlock()
+
+                          if alreadyResolved { return }
+                          switch result {
+                          case .success:
+                              completion(result)
+                          case .failure:
+                              if allFailed {
+                                  completion(.failure(NSError(domain: "VideoResolver", code: -2, userInfo: [NSLocalizedDescriptionKey: "فشلت جميع سيرفرات الاستخراج"])))
+                              }
+                          }
                       }
                   }
               }
 
-              private static func tryNext(_ endpoints: [String], pageURL: String, index: Int, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
-                  tryEndpoints(endpoints, pageURL: pageURL, index: index, completion: completion)
+              private static func shortLabel(for endpoint: String) -> String {
+                  if let host = URL(string: endpoint)?.host {
+                      return host.replacingOccurrences(of: "www.", with: "")
+                  }
+                  return endpoint
               }
 
               private static func requestEndpoint(_ endpoint: String, pageURL: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
@@ -813,6 +1239,7 @@ jobs:
                   ]
                   request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
+                  let label = shortLabel(for: endpoint)
                   URLSession.shared.dataTask(with: request) { data, response, _ in
                       guard let data = data,
                             let http = response as? HTTPURLResponse,
@@ -823,21 +1250,21 @@ jobs:
                       }
 
                       let status = json["status"] as? String ?? ""
-                      let filename = json["filename"] as? String ?? "video.mp4"
+                      let filename = json["filename"] as? String ?? ""
 
                       // tunnel / redirect / stream / success: الرابط المباشر في "url"
                       if ["tunnel", "redirect", "stream", "success"].contains(status),
                          let urlString = json["url"] as? String,
                          let direct = URL(string: urlString) {
-                          completion(.success(ResolvedVideo(url: direct, filename: filename, source: endpoint)))
+                          completion(.success(ResolvedVideo(url: direct, filename: filename, sourceLabel: label)))
                           return
                       }
 
-                      // picker: عدة ملفات (بوستات انستجرام مثلاً) — خذ أول فيديو
+                      // picker: عدة ملفات (بوستات انستجرام) — خذ أول فيديو
                       if status == "picker", let picker = json["picker"] as? [[String: Any]] {
                           let videoItem = picker.first(where: { ($0["type"] as? String) == "video" }) ?? picker.first
                           if let urlString = videoItem?["url"] as? String, let direct = URL(string: urlString) {
-                              completion(.success(ResolvedVideo(url: direct, filename: filename, source: endpoint)))
+                              completion(.success(ResolvedVideo(url: direct, filename: filename, sourceLabel: label)))
                               return
                           }
                       }
@@ -1131,6 +1558,295 @@ jobs:
                   // محاكاة (استبدلها بالكود الحقيقي من SwiftWhisper — انظر REVIEW.md)
                   DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
                       completion("هذا نص تجريبي من Whisper. قم بدمج مكتبة SwiftWhisper للحصول على ترجمة صوتية حقيقية.")
+                  }
+              }
+          }
+          EOF
+
+          # ========== Utils/MediaValidator.swift (فحص ملفات الوسائط — من تطبيق الموسيقى) ==========
+          cat > VideoDownloader/Utils/MediaValidator.swift << 'EOF'
+          import Foundation
+
+          /// التحقق من ملفات الوسائط قبل وبعد التحميل — نفس تقنية تطبيق الموسيقى:
+          /// طلب Range صغير + فحص الـ magic bytes لكشف الروابط الوهمية وصفحات الخطأ
+          class MediaValidator {
+
+              static let mobileUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+
+              enum ValidationResult {
+                  case valid(size: Int64)
+                  case failed(String)
+              }
+
+              /// فحص الرابط قبل التحميل: هل يبدو كملف وسائط حقيقي؟
+              static func probe(url: URL, referer: String? = nil, completion: @escaping (Bool) -> Void) {
+                  var req = URLRequest(url: url, timeoutInterval: 10)
+                  req.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+                  if let referer = referer { req.setValue(referer, forHTTPHeaderField: "Referer") }
+                  req.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
+
+                  URLSession.shared.dataTask(with: req) { data, resp, err in
+                      if err != nil { completion(false); return }
+                      guard let hr = resp as? HTTPURLResponse,
+                            hr.statusCode >= 200, hr.statusCode < 300 else {
+                          completion(false)
+                          return
+                      }
+                      let ct = (hr.mimeType ?? "").lowercased()
+                      // صفحات HTML/JSON = غالباً خطأ — إلا لو الـ bytes تقول غير كده
+                      if ct.contains("html") || ct.contains("json") || ct.contains("text") {
+                          if let d = data, looksLikeMedia(d) { completion(true) } else { completion(false) }
+                          return
+                      }
+                      completion(true)
+                  }.resume()
+              }
+
+              /// فحص ملف تم تحميله: الحجم + الـ magic bytes
+              static func validateFile(at url: URL) -> ValidationResult {
+                  let fm = FileManager.default
+                  guard let attrs = try? fm.attributesOfItem(atPath: url.path),
+                        let size = attrs[.size] as? Int64, size > 1_000 else {
+                      return .failed("الملف صغير جداً (تالف)")
+                  }
+                  let head: Data = {
+                      guard let fh = FileHandle(forReadingAtPath: url.path) else { return Data() }
+                      defer { try? fh.close() }
+                      return fh.readData(ofLength: 12)
+                  }()
+                  guard !head.isEmpty else { return .failed("تعذر قراءة الملف") }
+
+                  let b = [UInt8](head)
+                  if b[0] == 0x7B { return .failed("السيرفر أرجع خطأ JSON — أعد المحاولة") }   // '{'
+                  if b[0] == 0x3C { return .failed("السيرفر أرجع صفحة خطأ HTML") }               // '<'
+                  if looksLikeMedia(head) { return .valid(size: size) }
+                  return .failed("الملف ليس وسائط صالحة")
+              }
+
+              /// بصمات ملفات الوسائط المعروفة:
+              /// MP4/M4A (ftyp) • WebM/MKV (EBML) • AVI/WAV (RIFF) • MP3 • OGG • FLAC
+              static func looksLikeMedia(_ data: Data) -> Bool {
+                  let b = [UInt8](data)
+                  guard b.count >= 4 else { return false }
+                  // MP4 / M4A / MOV: البايتات 4-7 = "ftyp"
+                  if b.count >= 8, b[4] == 0x66, b[5] == 0x74, b[6] == 0x79, b[7] == 0x70 { return true }
+                  // WebM / MKV (EBML)
+                  if b[0] == 0x1A, b[1] == 0x45, b[2] == 0xDF, b[3] == 0xA3 { return true }
+                  // AVI / WAV (RIFF)
+                  if b[0] == 0x52, b[1] == 0x49, b[2] == 0x46, b[3] == 0x46 { return true }
+                  // MP3: ID3 أو frame sync
+                  if b[0] == 0x49, b[1] == 0x44, b[2] == 0x33 { return true }
+                  if b[0] == 0xFF, (b[1] & 0xE0) == 0xE0 { return true }
+                  // OGG
+                  if b[0] == 0x4F, b[1] == 0x67, b[2] == 0x67, b[3] == 0x53 { return true }
+                  // FLAC
+                  if b[0] == 0x66, b[1] == 0x4C, b[2] == 0x61, b[3] == 0x43 { return true }
+                  return false
+              }
+          }
+          EOF
+
+          # ========== Utils/ChunkedDownloader.swift (تحميل متوازٍ متقطع — من تطبيق الموسيقى) ==========
+          cat > VideoDownloader/Utils/ChunkedDownloader.swift << 'EOF'
+          import Foundation
+
+          /// تحميل متوازٍ متقطع — نفس تقنية تطبيق الموسيقى:
+          /// يفتح عدة اتصالات Range في نفس الوقت لكسر تحديد السرعة على الاتصال الواحد
+          /// (سيرفرات Cloudflare وغيرها تحدد الاتصال الواحد لكنها بتخدم Range بسرعة عالية)
+          class ChunkedDownloader {
+              private let url: URL
+              private let referer: String
+              private let userAgent: String
+              private let totalBytes: Int64
+              private let chunkSize: Int
+              private let maxConnections: Int
+              private let tempFileURL: URL
+              private let fileHandle: FileHandle
+              private let syncQueue = DispatchQueue(label: "videodownloader.chunked")
+              private let session: URLSession
+              private let totalChunks: Int
+              private let onProgress: (Double) -> Void
+              private let onComplete: (Result<URL, Error>) -> Void
+
+              private var nextChunkIndex = 0
+              private var bytesWritten: Int64 = 0
+              private var activeCount = 0
+              private var failed = false
+              private var didFinish = false
+              private var isCancelled = false
+              private var completedChunks = Set<Int>()
+              private var retriesPerChunk: [Int: Int] = [:]
+
+              init(url: URL, referer: String, userAgent: String, totalBytes: Int64,
+                   chunkSize: Int = 2_000_000, connections: Int = 6,
+                   onProgress: @escaping (Double) -> Void,
+                   onComplete: @escaping (Result<URL, Error>) -> Void) throws {
+                  self.url = url
+                  self.referer = referer
+                  self.userAgent = userAgent
+                  self.totalBytes = totalBytes
+                  self.chunkSize = chunkSize
+                  self.maxConnections = connections
+                  self.onProgress = onProgress
+                  self.onComplete = onComplete
+
+                  let tmpName = "vd_chunked_\(UUID().uuidString).dat"
+                  self.tempFileURL = FileManager.default.temporaryDirectory.appendingPathComponent(tmpName)
+                  FileManager.default.createFile(atPath: tempFileURL.path, contents: nil)
+                  let fh = try FileHandle(forWritingTo: tempFileURL)
+                  try fh.truncate(atOffset: UInt64(totalBytes))
+                  self.fileHandle = fh
+                  self.totalChunks = Int((totalBytes + Int64(chunkSize) - 1) / Int64(chunkSize))
+
+                  let cfg = URLSessionConfiguration.ephemeral
+                  cfg.timeoutIntervalForRequest = 120
+                  cfg.timeoutIntervalForResource = 1800
+                  cfg.httpMaximumConnectionsPerHost = connections
+                  cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
+                  cfg.urlCache = nil
+                  self.session = URLSession(configuration: cfg)
+              }
+
+              func start() {
+                  syncQueue.async { [weak self] in
+                      guard let self = self else { return }
+                      let n = min(self.maxConnections, self.totalChunks)
+                      for _ in 0..<n { self.scheduleNext() }
+                  }
+              }
+
+              func cancel() {
+                  syncQueue.async { [weak self] in
+                      guard let self = self else { return }
+                      self.isCancelled = true
+                      self.failed = true
+                      self.session.invalidateAndCancel()
+                      try? self.fileHandle.close()
+                      try? FileManager.default.removeItem(at: self.tempFileURL)
+                  }
+              }
+
+              private func scheduleNext() {
+                  if failed || isCancelled { return }
+                  let idx = nextChunkIndex
+                  if idx >= totalChunks {
+                      if activeCount == 0 { finalizeFile() }
+                      return
+                  }
+                  nextChunkIndex += 1
+                  activeCount += 1
+                  fetchChunk(idx: idx)
+              }
+
+              private func fetchChunk(idx: Int) {
+                  let start = Int64(idx) * Int64(chunkSize)
+                  var end = start + Int64(chunkSize) - 1
+                  if end >= totalBytes { end = totalBytes - 1 }
+                  let expected = Int(end - start + 1)
+
+                  var req = URLRequest(url: url, timeoutInterval: 90)
+                  req.httpMethod = "GET"
+                  req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+                  if !referer.isEmpty { req.setValue(referer, forHTTPHeaderField: "Referer") }
+                  req.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
+                  req.setValue("*/*", forHTTPHeaderField: "Accept")
+                  req.cachePolicy = .reloadIgnoringLocalCacheData
+
+                  let task = session.dataTask(with: req) { [weak self] data, _, error in
+                      guard let self = self else { return }
+                      self.syncQueue.async {
+                          self.handleChunkResult(idx: idx, start: start, expected: expected, data: data, error: error)
+                      }
+                  }
+                  task.resume()
+              }
+
+              private func handleChunkResult(idx: Int, start: Int64, expected: Int, data: Data?, error: Error?) {
+                  if isCancelled || failed { return }
+
+                  if let error = error {
+                      if (error as NSError).code == -999 { return }  // إلغاء مقصود
+                      if retryChunk(idx) { return }
+                      fail(NSError(domain: "ChunkedDownloader", code: -3,
+                                   userInfo: [NSLocalizedDescriptionKey: "فشل تحميل الجزء \(idx + 1)"]))
+                      return
+                  }
+
+                  guard let d = data, d.count == expected else {
+                      if retryChunk(idx) { return }
+                      fail(NSError(domain: "ChunkedDownloader", code: -4,
+                                   userInfo: [NSLocalizedDescriptionKey: "حجم الجزء \(idx + 1) غير مطابق"]))
+                      return
+                  }
+
+                  do {
+                      try fileHandle.seek(toOffset: UInt64(start))
+                      try fileHandle.write(contentsOf: d)
+                  } catch {
+                      fail(NSError(domain: "ChunkedDownloader", code: -7,
+                                   userInfo: [NSLocalizedDescriptionKey: "فشل الكتابة على القرص"]))
+                      return
+                  }
+
+                  completedChunks.insert(idx)
+                  bytesWritten += Int64(d.count)
+                  let p = Double(bytesWritten) / Double(totalBytes)
+                  DispatchQueue.main.async { [weak self] in
+                      self?.onProgress(min(0.999, p))
+                  }
+
+                  activeCount -= 1
+                  if nextChunkIndex < totalChunks {
+                      scheduleNext()
+                  } else if activeCount == 0 {
+                      finalizeFile()
+                  }
+              }
+
+              /// إعادة محاولة للجزء الفاشل حتى 3 مرات
+              private func retryChunk(_ idx: Int) -> Bool {
+                  let r = retriesPerChunk[idx, default: 0]
+                  guard r < 3 else { return false }
+                  retriesPerChunk[idx] = r + 1
+                  fetchChunk(idx: idx)
+                  return true
+              }
+
+              private func finalizeFile() {
+                  if didFinish || failed || isCancelled { return }
+                  didFinish = true
+                  syncQueue.async { [weak self] in
+                      guard let self = self else { return }
+                      try? self.fileHandle.synchronize()
+                      try? self.fileHandle.close()
+                      self.session.invalidateAndCancel()
+
+                      // التأكد إن الحجم المجمّع = الحجم المتوقع
+                      let attrs = try? FileManager.default.attributesOfItem(atPath: self.tempFileURL.path)
+                      let actualSize = (attrs?[.size] as? Int64) ?? 0
+                      if actualSize != self.totalBytes {
+                          try? FileManager.default.removeItem(at: self.tempFileURL)
+                          DispatchQueue.main.async {
+                              self.onComplete(.failure(NSError(domain: "ChunkedDownloader", code: -6,
+                                                               userInfo: [NSLocalizedDescriptionKey: "حجم الملف النهائي غير مطابق"])))
+                          }
+                          return
+                      }
+                      DispatchQueue.main.async {
+                          self.onProgress(1.0)
+                          self.onComplete(.success(self.tempFileURL))
+                      }
+                  }
+              }
+
+              private func fail(_ error: Error) {
+                  if failed { return }
+                  failed = true
+                  session.invalidateAndCancel()
+                  try? fileHandle.close()
+                  try? FileManager.default.removeItem(at: tempFileURL)
+                  DispatchQueue.main.async { [weak self] in
+                      self?.onComplete(.failure(error))
                   }
               }
           }
