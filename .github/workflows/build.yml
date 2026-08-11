@@ -1937,7 +1937,10 @@ jobs:
                       var isVideo = false
                       if let vs = j["videoStreams"] as? [[String: Any]] {
                           let mp4s = vs.filter { (($0["mimeType"] as? String) ?? "").contains("mp4") }
-                          let chosen = mp4s.max { (($0["bitrate"] as? Int) ?? 0) < (($1["bitrate"] as? Int) ?? 0) }
+                          // الأفضلية: MP4 مدموج بالصوت (videoOnly=false) عشان الفيديو يشتغل بصوت
+                          let combined = mp4s.filter { (($0["videoOnly"] as? Bool) ?? false) == false }
+                          let pool = combined.isEmpty ? mp4s : combined
+                          let chosen = pool.max { (($0["bitrate"] as? Int) ?? 0) < (($1["bitrate"] as? Int) ?? 0) }
                           if let u = chosen?["url"] as? String, let uu = URL(string: u) {
                               bestURL = uu
                               isVideo = true
@@ -2057,7 +2060,7 @@ jobs:
                       var resolved = false
                       var fails = 0
                       for uri in chosen {
-                          probeRedirect(uri + "/latest_version?id=" + vid) { final in
+                          fetchInvidiousVideo(uri, vid: vid) { final in
                               lock.lock()
                               let already = resolved
                               if final != nil { resolved = true } else { fails += 1 }
@@ -2072,6 +2075,33 @@ jobs:
                           }
                       }
                   }
+              }
+
+              /// يجيب ستريمات MP4 المدموجة بالصوت من Invidious API
+              private static func fetchInvidiousVideo(_ uri: String, vid: String, completion: @escaping (URL?) -> Void) {
+                  guard let u = URL(string: uri + "/api/v1/videos/" + vid) else {
+                      completion(nil)
+                      return
+                  }
+                  var req = URLRequest(url: u, timeoutInterval: 12)
+                  req.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+                  URLSession.shared.dataTask(with: req) { data, _, err in
+                      guard let data = data, err == nil,
+                            let j = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                          completion(nil)
+                          return
+                      }
+                      // formatStreams = ستريمات progressive مدموجة (فيديو+صوت) بتشتغل في أي مشغل
+                      if let fs = j["formatStreams"] as? [[String: Any]] {
+                          let mp4s = fs.filter { (($0["type"] as? String) ?? "").contains("mp4") }
+                          let best = mp4s.max { (($0["bitrate"] as? Int) ?? 0) < (($1["bitrate"] as? Int) ?? 0) } ?? mp4s.first
+                          if let urlStr = best?["url"] as? String, let uu = URL(string: urlStr) {
+                              completion(uu)
+                              return
+                          }
+                      }
+                      completion(nil)
+                  }.resume()
               }
 
               /// يتبع الـ redirects ويرجع الرابط النهائي المباشر
@@ -3296,6 +3326,12 @@ jobs:
                               Text("💡 لضمان يوتيوب بشكل موثوق: استضف cobalt بنفسك (سطر واحد Docker) ثم أضف رابطه هنا. السيرفرات المجتمعية العامة قد تتوقف في أي وقت.")
                                   .font(.caption2)
                                   .foregroundColor(.orange)
+                          }
+
+                          Section {
+                              Text("إصدار محرك التحميل: V10 — لو مش شايف النص ده في التطبيق المثبت على جهازك، فأنت بتثبّت نسخة قديمة: انسخ build.yml الجديد للريبتو، شغّل الـ workflow من جديد، وامسح التطبيق القديم قبل التثبيت.")
+                                  .font(.caption2)
+                                  .foregroundColor(.secondary)
                           }
                       }
                       .navigationTitle("إعدادات الترجمة")
