@@ -128,6 +128,7 @@ jobs:
               @State private var selectedVideo: DownloadItem?
               @State private var showPlayer = false
               @State private var showCorruptAlert = false
+              @State private var showUnsupportedAlert = false
 
               var body: some View {
                   NavigationView {
@@ -157,8 +158,11 @@ jobs:
                               .contentShape(Rectangle())
                               .onTapGesture {
                                   if !item.isDownloading, let url = item.localURL {
-                                      // فحص سريع: الملف وسائط صالحة ولا تالف؟
-                                      if case .valid = MediaValidator.validateFile(at: url) {
+                                      let ext = url.pathExtension.lowercased()
+                                      if ext == "webm" || ext == "mkv" {
+                                          // مشغل iOS لا يدعم WebM/MKV — رسالة واضحة بدل نافذة سوداء
+                                          showUnsupportedAlert = true
+                                      } else if case .valid = MediaValidator.validateFile(at: url) {
                                           selectedVideo = item
                                           showPlayer = true
                                       } else {
@@ -185,6 +189,11 @@ jobs:
                           Button("حسناً", role: .cancel) {}
                       } message: {
                           Text("الملف ده مش وسائط صالحة — احذفه من المكتبة وأعد تحميله.")
+                      }
+                      .alert("صيغة غير مدعومة", isPresented: $showUnsupportedAlert) {
+                          Button("حسناً", role: .cancel) {}
+                      } message: {
+                          Text("الملف بصيغة WebM/MKV ومشغل iOS لا يدعمها. دوس إعادة المحاولة على التحميل — السباق هيجرب سيرفرات بترجع MP4 أو M4A اللي بتشتغل في المشغل.")
                       }
                   }
                   .navigationViewStyle(StackNavigationViewStyle())
@@ -1191,6 +1200,7 @@ jobs:
                               item.mediaURL = resolved.url
                               item.backendLabel = resolved.sourceLabel
                               item.referer = resolved.referer
+                              item.fromResolve = true
                               if !resolved.filename.isEmpty { item.proposedName = self.sanitize(resolved.filename) }
                               item.statusText = "جاري التحقق من الرابط…"
                               completion?(true, resolved.sourceLabel)
@@ -1352,12 +1362,16 @@ jobs:
                   // اسم نظيف + إضافة الامتداد لو ناقص
                   var name = item.proposedName.isEmpty ? "video" : item.proposedName
                   if !hasKnownMediaExtension(name) {
-                      let m = (mime ?? "").lowercased()
-                      if m.contains("mp4") || m.contains("m4v") { name += ".mp4" }
-                      else if m.contains("webm") { name += ".webm" }
-                      else if m.contains("quicktime") { name += ".mov" }
-                      else if m.contains("mpeg") || m.contains("mp3") { name += ".mp3" }
-                      else { name += ".mp4" }
+                      // الامتداد من البصمة الحقيقية للملف مش تخمين
+                      if let ext = MediaValidator.containerExtension(at: tmpLocation) {
+                          name += "." + ext
+                      } else {
+                          let m = (mime ?? "").lowercased()
+                          if m.contains("webm") { name += ".webm" }
+                          else if m.contains("quicktime") { name += ".mov" }
+                          else if m.contains("mpeg") || m.contains("mp3") { name += ".mp3" }
+                          else { name += ".mp4" }
+                      }
                   }
                   name = sanitize(name)
 
@@ -1384,7 +1398,12 @@ jobs:
                   item.localURL = destPath
                   item.progress = 1.0
                   item.isDownloading = false
-                  item.statusText = "تم التحميل ✅"
+                  let ext = destPath.pathExtension.lowercased()
+                  if ext == "webm" || ext == "mkv" {
+                      item.statusText = "تم التحميل ⚠️ WebM — مشغل iOS ميدعمهاش، دوس إعادة المحاولة"
+                  } else {
+                      item.statusText = "تم التحميل ✅"
+                  }
                   if item.proposedName.isEmpty { item.proposedName = destPath.lastPathComponent }
               }
 
@@ -1398,7 +1417,10 @@ jobs:
                       item.statusText = "إعادة المحاولة \(item.retryCount)/3…"
                       DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self, weak item] in
                           guard let self = self, let item = item, !item.isCancelled else { return }
-                          if let media = item.mediaURL {
+                          if item.fromResolve {
+                              // الرابط القديم فشل أو طلع تالف → نعيد الاستخراج من سيرفر مختلف
+                              self.resolveItem(item, completion: nil)
+                          } else if let media = item.mediaURL {
                               self.beginMediaDownload(item: item, mediaURL: media)
                           } else {
                               self.resolveItem(item, completion: nil)
@@ -1465,6 +1487,7 @@ jobs:
               var mediaURL: URL?
               var proposedName: String = ""
               var referer: String?
+              var fromResolve = false
               var retryCount = 0
               var isCancelled = false
 
@@ -2511,6 +2534,21 @@ jobs:
                   if b[0] == 0x3C { return .failed("السيرفر أرجع صفحة خطأ HTML") }               // '<'
                   if looksLikeMedia(head) { return .valid(size: size) }
                   return .failed("الملف ليس وسائط صالحة")
+              }
+
+              /// امتداد الحاوية الحقيقي من البصمة (مش تخمين)
+              static func containerExtension(at url: URL) -> String? {
+                  guard let fh = FileHandle(forReadingAtPath: url.path) else { return nil }
+                  defer { try? fh.close() }
+                  let b = [UInt8](fh.readData(ofLength: 12))
+                  guard b.count >= 4 else { return nil }
+                  if b.count >= 8, b[4] == 0x66, b[5] == 0x74, b[6] == 0x79, b[7] == 0x70 { return "mp4" }
+                  if b[0] == 0x1A, b[1] == 0x45, b[2] == 0xDF, b[3] == 0xA3 { return "webm" }
+                  if b[0] == 0x52, b[1] == 0x49, b[2] == 0x46, b[3] == 0x46 { return "avi" }
+                  if b[0] == 0x47 { return "ts" }
+                  if b[0] == 0x49, b[1] == 0x44, b[2] == 0x33 { return "mp3" }
+                  if b[0] == 0xFF, (b[1] & 0xE0) == 0xE0 { return "mp3" }
+                  return nil
               }
 
               /// بصمات ملفات الوسائط المعروفة:
