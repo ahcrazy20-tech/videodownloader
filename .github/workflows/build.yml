@@ -49,172 +49,66 @@ jobs:
           }
           EOF
 
-          # ========== Views/ContentView.swift ==========
+          # ========== Views/ContentView.swift (تبويبات سفلية زي تطبيق الموسيقى) ==========
           cat > VideoDownloader/Views/ContentView.swift << 'EOF'
           import SwiftUI
           import WebKit
 
+          enum TabID: Hashable { case browser, library, settings }
+
           struct ContentView: View {
               @StateObject private var downloadManager = DownloadManager()
               @StateObject private var translationManager = SmartTranslationManager()
-              @StateObject private var webState = WebViewState()
-              @State private var urlString: String = "https://www.youtube.com"
-              @State private var loadTrigger: Int = 0
-              @State private var showDownloads = false
-              @State private var showTranslationSettings = false
-              @State private var isResolving = false
-              @State private var showAlert = false
-              @State private var alertMessage = ""
+              @StateObject private var webViewModel = WebViewModel()
+              @State private var urlString = "https://m.youtube.com"
+              @State private var selected: TabID = .browser
 
               var body: some View {
                   VStack(spacing: 0) {
-                      // شريط العنوان
-                      HStack {
-                          TextField("أدخل الرابط", text: $urlString)
-                              .textFieldStyle(.roundedBorder)
-                              .textInputAutocapitalization(.never)
-                              .disableAutocorrection(true)
-                              .onSubmit {
-                                  urlString = normalizedURL(urlString)
-                                  loadTrigger += 1
-                              }
-                          Button("ذهاب") {
-                              urlString = normalizedURL(urlString)
-                              loadTrigger += 1
-                          }
-                          .buttonStyle(.borderedProminent)
-
-                          // زر التحميل الذكي: يحلل رابط أي منصة (يوتيوب، تيك توك، انستجرام...)
-                          Button {
-                              smartDownload()
-                          } label: {
-                              if isResolving {
-                                  ProgressView().scaleEffect(0.8)
-                              } else {
-                                  Image(systemName: "square.and.arrow.down.fill")
-                              }
-                          }
-                          .buttonStyle(.borderedProminent)
-                          .disabled(isResolving)
-                      }
-                      .padding(.horizontal)
-                      .padding(.top, 8)
-
-                      // شريط التنقل: رجوع / تقدم / تحديث أو إيقاف
-                      HStack(spacing: 24) {
-                          Button { webState.goBack() } label: {
-                              Image(systemName: "chevron.left").font(.title3)
-                          }
-                          .disabled(!webState.canGoBack)
-                          .opacity(webState.canGoBack ? 1 : 0.35)
-
-                          Button { webState.goForward() } label: {
-                              Image(systemName: "chevron.right").font(.title3)
-                          }
-                          .disabled(!webState.canGoForward)
-                          .opacity(webState.canGoForward ? 1 : 0.35)
-
-                          Spacer()
-
-                          if webState.isLoading {
-                              Button { webState.stop() } label: {
-                                  Image(systemName: "xmark").font(.title3)
-                              }
-                          } else {
-                              Button { webState.reload() } label: {
-                                  Image(systemName: "arrow.clockwise").font(.title3)
-                              }
-                          }
-                      }
-                      .padding(.horizontal)
-                      .padding(.vertical, 6)
-                      .background(.thinMaterial)
-
-                      // شريط تقدم التحميل
-                      if webState.isLoading {
-                          ProgressView(value: webState.progress)
-                              .tint(.blue)
-                      }
-
-                      // WebView — التحميل يتم فقط عند الضغط على "ذهاب" (loadTrigger)
-                      WebView(urlString: $urlString, loadTrigger: $loadTrigger, state: webState, downloadManager: downloadManager)
-                          .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                      // شريط الأدوات السفلي
-                      HStack {
-                          Button {
-                              NotificationCenter.default.post(name: .extractVideos, object: nil)
-                          } label: {
-                              Label("استخراج فيديوهات", systemImage: "video.badge.plus")
-                          }
-                          .buttonStyle(.bordered)
-
-                          Spacer()
-
-                          // زر إعدادات الترجمة
-                          Button {
-                              showTranslationSettings.toggle()
-                          } label: {
-                              Label(translationManager.currentEngine.name, systemImage: "translate")
-                          }
-                          .buttonStyle(.bordered)
-                          .sheet(isPresented: $showTranslationSettings) {
+                      Group {
+                          switch selected {
+                          case .browser:
+                              BrowserView(viewModel: webViewModel, urlString: $urlString, downloadManager: downloadManager)
+                          case .library:
+                              DownloadsListView(downloadManager: downloadManager)
+                          case .settings:
                               TranslationSettingsView(translationManager: translationManager)
                           }
-
-                          Spacer()
-
-                          Button {
-                              showDownloads.toggle()
-                          } label: {
-                              Label("تحميلات (\(downloadManager.downloads.count))", systemImage: "arrow.down.circle")
-                          }
-                          .buttonStyle(.bordered)
                       }
-                      .padding(.horizontal)
-                      .padding(.vertical, 8)
-                      .background(.thinMaterial)
-                  }
-                  .sheet(isPresented: $showDownloads) {
-                      DownloadsListView(downloadManager: downloadManager)
+                      .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                      Divider()
+
+                      // شريط التبويبات السفلي (نفس فكرة MainTabView في تطبيق الموسيقى)
+                      HStack(spacing: 0) {
+                          mainTabButton("المتصفح", "safari.fill", .browser)
+                          mainTabButton("المكتبة", "square.stack.fill", .library)
+                          mainTabButton("الترجمة", "translate", .settings)
+                      }
+                      .padding(.top, 6)
+                      .padding(.bottom, 4)
+                      .background(.bar)
                   }
                   .onReceive(NotificationCenter.default.publisher(for: .videoURLFound)) { notification in
                       if let url = notification.object as? String {
                           downloadManager.startDownload(url: url)
                       }
                   }
-                  .alert("تعذر التحميل", isPresented: $showAlert) {
-                      Button("حسناً", role: .cancel) {}
-                  } message: {
-                      Text(alertMessage)
-                  }
               }
 
-              /// ينظم الرابط: يضيف https:// أو يحوّل النص العادي إلى بحث جوجل
-              private func normalizedURL(_ raw: String) -> String {
-                  let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                  guard !trimmed.isEmpty else { return trimmed }
-                  if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") { return trimmed }
-                  if trimmed.contains("."), !trimmed.contains(" ") {
-                      return "https://" + trimmed
-                  }
-                  let query = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? trimmed
-                  return "https://www.google.com/search?q=" + query
-              }
-
-              /// التحميل الذكي: يستخدم سيرفرات الاستخراج لتحويل رابط المنصة إلى ملف مباشر
-              private func smartDownload() {
-                  guard !isResolving else { return }
-                  isResolving = true
-                  downloadManager.startSmartDownload(pageURL: urlString) { success, errorMessage in
-                      DispatchQueue.main.async {
-                          isResolving = false
-                          if !success, let message = errorMessage {
-                              alertMessage = message
-                              showAlert = true
-                          }
+              private func mainTabButton(_ label: String, _ icon: String, _ id: TabID) -> some View {
+                  Button {
+                      selected = id
+                      UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                  } label: {
+                      VStack(spacing: 3) {
+                          Image(systemName: icon).font(.system(size: 20))
+                          Text(label).font(.caption2)
                       }
+                      .foregroundColor(selected == id ? .blue : .secondary)
+                      .frame(maxWidth: .infinity)
                   }
+                  .buttonStyle(.plain)
               }
           }
 
@@ -225,19 +119,34 @@ jobs:
           }
           EOF
 
-          # ========== Views/DownloadsListView.swift (صف محسّن: حالة + إلغاء + إعادة محاولة) ==========
+          # ========== Views/DownloadsListView.swift (تبويب المكتبة + حالة + إلغاء + إعادة) ==========
           cat > VideoDownloader/Views/DownloadsListView.swift << 'EOF'
           import SwiftUI
 
           struct DownloadsListView: View {
               @ObservedObject var downloadManager: DownloadManager
-              @Environment(\.dismiss) var dismiss
               @State private var selectedVideo: DownloadItem?
               @State private var showPlayer = false
 
               var body: some View {
                   NavigationView {
                       List {
+                          if downloadManager.downloads.isEmpty {
+                              VStack(spacing: 12) {
+                                  Image(systemName: "square.and.arrow.down")
+                                      .font(.system(size: 48))
+                                      .foregroundColor(.secondary)
+                                  Text("مكتبتك فاضية")
+                                      .font(.title2).bold()
+                                  Text("حمّل فيديوهات من تبويب المتصفح أو الصق رابط بالزر ⬇")
+                                      .font(.subheadline)
+                                      .foregroundColor(.secondary)
+                                      .multilineTextAlignment(.center)
+                              }
+                              .padding(.vertical, 60)
+                              .frame(maxWidth: .infinity)
+                          }
+
                           ForEach(Array(downloadManager.downloads.enumerated()), id: \.element.id) { index, item in
                               DownloadRow(
                                   item: item,
@@ -260,20 +169,18 @@ jobs:
                               }
                           }
                       }
-                      .navigationTitle("التحميلات")
-                      .toolbar {
-                          Button("إغلاق") { dismiss() }
-                      }
+                      .navigationTitle("المكتبة (\(downloadManager.downloads.count))")
                       .sheet(isPresented: $showPlayer) {
                           if let video = selectedVideo, let localURL = video.localURL {
                               VideoPlayerView(videoURL: localURL, videoTitle: video.proposedName.isEmpty ? video.url.lastPathComponent : video.proposedName)
                           }
                       }
                   }
+                  .navigationViewStyle(StackNavigationViewStyle())
               }
           }
 
-          /// صف التحميل: حالة + تقدم + إلغاء + إعادة محاولة (مستوحى من تطبيق الموسيقى)
+          /// صف التحميل: حالة + تقدم + إلغاء + إعادة محاولة + badge السيرفر الكسبان
           struct DownloadRow: View {
               @ObservedObject var item: DownloadItem
               let onCancel: () -> Void
@@ -349,7 +256,7 @@ jobs:
           }
           EOF
 
-          # ========== Views/VideoPlayerView.swift ==========
+          # ========== Views/VideoPlayerView.swift (مشغل ذكي: تخطي ±10 + حفظ تلقائي + أوقات) ==========
           cat > VideoDownloader/Views/VideoPlayerView.swift << 'EOF'
           import SwiftUI
           import AVKit
@@ -363,19 +270,31 @@ jobs:
               @State private var isPlaying = false
               @State private var currentSpeed: Float = 1.0
               @State private var savedProgress: TimeInterval = 0.0
+              @State private var currentTimeDisplay: TimeInterval = 0
+              @State private var durationDisplay: TimeInterval = 0
               @StateObject private var syncManager = SubtitleSyncManager()
               @StateObject private var translator = VideoTranslator()
               @State private var showSyncControls = false
               @State private var showTranslation = false
 
+              // حفظ تلقائي لموضع التشغيل كل 5 ثواني (مش بس عند الخروج)
+              private let saveTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
               private var progressKey: String { "progress_\(videoURL.lastPathComponent)" }
 
               var body: some View {
                   VStack {
-                      // عنوان الفيديو
-                      Text(videoTitle).font(.headline).padding()
+                      // عنوان + عدّاد الوقت
+                      HStack {
+                          Text(videoTitle).font(.headline).lineLimit(1)
+                          Spacer()
+                          Text("\(formatTime(currentTimeDisplay)) / \(formatTime(durationDisplay))")
+                              .font(.caption2)
+                              .foregroundColor(.secondary)
+                      }
+                      .padding(.horizontal)
+                      .padding(.top, 8)
 
-                      // مشغل الفيديو
+                      // المشغل
                       if let player = player {
                           VideoPlayerController(player: player, isPlaying: $isPlaying)
                               .frame(height: UIScreen.main.bounds.height * 0.40)
@@ -394,7 +313,7 @@ jobs:
                               .frame(height: UIScreen.main.bounds.height * 0.40)
                       }
 
-                      // عرض الترجمة الناتجة
+                      // الترجمة الناتجة
                       if !translator.translatedText.isEmpty {
                           Text(translator.translatedText)
                               .font(.body)
@@ -409,14 +328,22 @@ jobs:
                               .padding()
                       }
 
-                      // شريط التحكم
-                      HStack(spacing: 16) {
+                      // شريط التحكم الذكي
+                      HStack(spacing: 12) {
+                          Button { skipBy(-10) } label: {
+                              Image(systemName: "gobackward.10").font(.title2)
+                          }
+
                           Button {
                               isPlaying ? player?.pause() : player?.play()
                               isPlaying.toggle()
                           } label: {
                               Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
                                   .font(.largeTitle).foregroundColor(.blue)
+                          }
+
+                          Button { skipBy(10) } label: {
+                              Image(systemName: "goforward.10").font(.title2)
                           }
 
                           Divider().frame(height: 30)
@@ -429,7 +356,7 @@ jobs:
                                   Text("\(speed == 1.0 ? "1x" : "\(speed)x")")
                                       .font(.subheadline)
                                       .fontWeight(currentSpeed == Float(speed) ? .bold : .regular)
-                                      .padding(.horizontal, 8)
+                                      .padding(.horizontal, 6)
                                       .padding(.vertical, 4)
                                       .background(currentSpeed == Float(speed) ? Color.blue : Color.gray.opacity(0.3))
                                       .foregroundColor(currentSpeed == Float(speed) ? .white : .primary)
@@ -439,36 +366,25 @@ jobs:
 
                           Spacer()
 
-                          // زر الترجمة
-                          Button {
-                              showTranslation.toggle()
-                          } label: {
-                              Image(systemName: "text.bubble")
-                                  .font(.title2)
+                          Button { showTranslation.toggle() } label: {
+                              Image(systemName: "text.bubble").font(.title2)
                           }
                           .sheet(isPresented: $showTranslation) {
                               TranslationView(translator: translator, videoURL: videoURL)
                           }
 
-                          // زر تزامن الترجمة
-                          Button {
-                              showSyncControls.toggle()
-                          } label: {
-                              Image(systemName: "text.alignleft")
-                                  .font(.title2)
+                          Button { showSyncControls.toggle() } label: {
+                              Image(systemName: "text.alignleft").font(.title2)
                           }
                           .sheet(isPresented: $showSyncControls) {
                               NavigationView {
                                   syncManager.showSyncControls()
                                       .navigationTitle("ضبط التوقيت")
                                       .navigationBarTitleDisplayMode(.inline)
-                                      .toolbar {
-                                          Button("تم") { showSyncControls = false }
-                                      }
+                                      .toolbar { Button("تم") { showSyncControls = false } }
                               }
                           }
 
-                          // زر ملء الشاشة
                           Button {
                               guard let player = player else { return }
                               let fullScreenController = AVPlayerViewController()
@@ -479,8 +395,7 @@ jobs:
                                   rootVC.present(fullScreenController, animated: true)
                               }
                           } label: {
-                              Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                  .font(.title2)
+                              Image(systemName: "arrow.up.left.and.arrow.down.right").font(.title2)
                           }
                       }
                       .padding()
@@ -488,25 +403,48 @@ jobs:
 
                       Spacer()
                   }
+                  .onReceive(saveTimer) { _ in
+                      if let player = player {
+                          let t = player.currentTime().seconds
+                          currentTimeDisplay = t
+                          if t > 1 { UserDefaults.standard.set(t, forKey: progressKey) }
+                      }
+                  }
                   .onAppear {
                       let asset = AVAsset(url: videoURL)
                       let playerItem = AVPlayerItem(asset: asset)
                       let newPlayer = AVPlayer(playerItem: playerItem)
                       player = newPlayer
 
-                      // استرجاع موضع التوقف السابق — مع انتظار تحميل المدة الفعلية أولاً
+                      // استئناف ذكي: ارجع لآخر موضع توقف بعد ما المدة تتحمل
                       savedProgress = UserDefaults.standard.double(forKey: progressKey)
                       if savedProgress > 1.0 {
                           let resumeTime = savedProgress
                           Task { @MainActor in
                               guard let duration = try? await asset.load(.duration),
                                     duration.seconds.isFinite, duration.seconds > 0 else { return }
+                              durationDisplay = duration.seconds
                               let target = CMTime(seconds: min(resumeTime, max(duration.seconds - 1, 0)), preferredTimescale: 600)
-                              // في SDK الجديد: seek(to:) بقى async ولازم await
                               await newPlayer.seek(to: target)
                           }
                       }
                   }
+              }
+
+              /// تخطي ذكي ±10 ثواني
+              private func skipBy(_ seconds: Double) {
+                  guard let player = player else { return }
+                  let target = max(0, player.currentTime().seconds + seconds)
+                  currentTimeDisplay = target
+                  Task { @MainActor in
+                      await player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+                  }
+              }
+
+              private func formatTime(_ t: TimeInterval) -> String {
+                  guard t.isFinite, t > 0 else { return "0:00" }
+                  let m = Int(t) / 60, s = Int(t) % 60
+                  return String(format: "%d:%02d", m, s)
               }
           }
 
@@ -610,170 +548,468 @@ jobs:
           }
           EOF
 
-          # ========== Views/WebView.swift (مطور: شريط تقدم + تنقل + تحميل تلقائي للوسائط) ==========
+          # ========== Views/WebView.swift (Web Hub: تبويبات + زر تحميل عائم + التقاط وسائط) ==========
           cat > VideoDownloader/Views/WebView.swift << 'EOF'
           import SwiftUI
           import WebKit
 
-          /// حالة الـ WebView (تحميل، تقدم، رجوع/تقدم) كـ ObservableObject لتظهر في SwiftUI
-          class WebViewState: ObservableObject {
-              @Published var isLoading = false
-              @Published var progress: Double = 0.0
-              @Published var canGoBack = false
-              @Published var canGoForward = false
-              weak var webView: WKWebView?
-
-              func goBack() { webView?.goBack() }
-              func goForward() { webView?.goForward() }
-              func reload() { webView?.reload() }
-              func stop() { webView?.stopLoading() }
+          struct BrowserTab: Identifiable {
+              let id = UUID()
+              var webView: WKWebView
+              var urlString: String
+              var title: String
           }
 
-          struct WebView: UIViewRepresentable {
-              @Binding var urlString: String
-              @Binding var loadTrigger: Int
-              @ObservedObject var state: WebViewState
-              var downloadManager: DownloadManager?
+          /// نموذج المتصفح — نفس فكرة WebViewModel في تطبيق الموسيقى:
+          /// تبويبات متعددة + التقاط استجابات الوسائط + زر تحميل عائم + مخطط vdown-dl://
+          class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
+              @Published var tabs: [BrowserTab] = []
+              @Published var currentTabIndex: Int = 0 { didSet { refreshNavState() } }
+              @Published var showTabs = false
+              @Published var canGoBack = false
+              @Published var canGoForward = false
+              @Published var isLoading = false
+              @Published var progress: Double = 0
+              @Published var showNamePrompt = false
+              @Published var customSongName = ""
+              var pendingDownloadURL: URL?
+              private var observations: [NSKeyValueObservation] = []
 
-              func makeUIView(context: Context) -> WKWebView {
+              override init() {
+                  super.init()
+                  addNewTab()
+              }
+
+              var currentWebView: WKWebView { tabs[currentTabIndex].webView }
+
+              private func makeWebView() -> WKWebView {
                   let config = WKWebViewConfiguration()
                   config.allowsInlineMediaPlayback = true
                   config.mediaTypesRequiringUserActionForPlayback = []
+                  let cc = WKUserContentController()
+                  cc.addUserScript(AdBlocker.injectScript())
+                  config.userContentController = cc
 
-                  let contentController = WKUserContentController()
-                  contentController.addUserScript(AdBlocker.injectScript())
-                  config.userContentController = contentController
+                  let wv = WKWebView(frame: .zero, configuration: config)
+                  wv.navigationDelegate = self
+                  wv.uiDelegate = self
+                  wv.allowsBackForwardNavigationGestures = true
 
-                  let webView = WKWebView(frame: .zero, configuration: config)
-                  webView.navigationDelegate = context.coordinator
-                  webView.allowsBackForwardNavigationGestures = true
-                  context.coordinator.attach(to: webView)
-                  state.webView = webView
-
-                  if let url = URL(string: urlString) {
-                      webView.load(URLRequest(url: url))
-                  }
-                  return webView
+                  observations = [
+                      wv.observe(\.estimatedProgress, options: [.new]) { [weak self] v, _ in
+                          let p = v.estimatedProgress
+                          DispatchQueue.main.async { self?.progress = p }
+                      },
+                      wv.observe(\.isLoading, options: [.new]) { [weak self] v, _ in
+                          let l = v.isLoading
+                          DispatchQueue.main.async { self?.isLoading = l }
+                      }
+                  ]
+                  return wv
               }
 
-              func updateUIView(_ webView: WKWebView, context: Context) {
-                  context.coordinator.parent = self
-                  // التحميل يحدث فقط عند تغيّر loadTrigger (زر "ذهاب") — يمنع حلقة إعادة التحميل
-                  if context.coordinator.lastLoadTrigger != loadTrigger {
-                      context.coordinator.lastLoadTrigger = loadTrigger
-                      if let url = URL(string: urlString) {
-                          webView.load(URLRequest(url: url))
+              func addNewTab() {
+                  let wv = makeWebView()
+                  tabs.append(BrowserTab(webView: wv, urlString: "https://m.youtube.com", title: "تبويب جديد"))
+                  currentTabIndex = tabs.count - 1
+                  loadUrl("https://m.youtube.com")
+              }
+
+              func closeTab(at index: Int) {
+                  tabs[index].webView.stopLoading()
+                  tabs.remove(at: index)
+                  if tabs.isEmpty {
+                      addNewTab()
+                  } else if currentTabIndex >= tabs.count {
+                      currentTabIndex = tabs.count - 1
+                  } else {
+                      refreshNavState()
+                  }
+              }
+
+              func goBack() { currentWebView.goBack() }
+              func goForward() { currentWebView.goForward() }
+              func refresh() { currentWebView.reload() }
+              func stop() { currentWebView.stopLoading() }
+
+              /// عنوان ذكي: بحث جوجل أو https:// تلقائياً
+              func loadUrl(_ raw: String) {
+                  var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                  if s.isEmpty { return }
+                  if !s.contains(".") || s.contains(" ") {
+                      if let enc = s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+                          s = "https://www.google.com/search?q=" + enc
+                      }
+                  } else if !s.hasPrefix("http") {
+                      s = "https://" + s
+                  }
+                  if let u = URL(string: s) {
+                      currentWebView.load(URLRequest(url: u))
+                  }
+              }
+
+              /// حقن زر تحميل عائم في الصفحة (نفس فكرة تطبيق الموسيقى)
+              func injectFloatingDL() {
+                  let js = """
+                  (function(){
+                      if (document.getElementById('__vd_dl_btn__')) { document.getElementById('__vd_dl_btn__').style.display='block'; return; }
+                      var b = document.createElement('a');
+                      b.id = '__vd_dl_btn__';
+                      b.innerText = '⬇ تحميل';
+                      b.style.cssText = 'position:fixed;right:14px;bottom:90px;z-index:999999;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;padding:10px 16px;border-radius:24px;font:bold 14px sans-serif;box-shadow:0 4px 16px rgba(0,0,0,0.5);text-decoration:none;';
+                      b.onclick = function(e){
+                          e.preventDefault();
+                          var src = null;
+                          document.querySelectorAll('video,audio').forEach(function(el){
+                              if(!src && el.currentSrc) src = el.currentSrc;
+                              if(!src && el.src) src = el.src;
+                          });
+                          var pick = src || location.href;
+                          var enc = btoa(unescape(encodeURIComponent(pick)));
+                          location.href = 'vdown-dl://?u=' + encodeURIComponent(enc);
+                      };
+                      document.body.appendChild(b);
+                  })();
+                  """
+                  currentWebView.evaluateJavaScript(js, completionHandler: nil)
+              }
+
+              /// استخراج رابط وسائط مباشر من عناصر الصفحة
+              func grabMedia() {
+                  let js = """
+                  (function(){
+                      var m = document.querySelectorAll('video,audio,source');
+                      for(var i=0;i<m.length;i++){
+                          var s = m[i].src || m[i].currentSrc;
+                          if(s && s.startsWith('http')) return s;
+                      }
+                      return null;
+                  })();
+                  """
+                  currentWebView.evaluateJavaScript(js) { [weak self] result, _ in
+                      guard let self = self else { return }
+                      if let s = result as? String, let u = URL(string: s) {
+                          DispatchQueue.main.async { self.promptDownload(url: u, suggested: u.lastPathComponent) }
+                      } else if let page = self.currentWebView.url {
+                          DispatchQueue.main.async { self.promptDownload(url: page, suggested: page.lastPathComponent) }
                       }
                   }
               }
 
-              func makeCoordinator() -> Coordinator {
-                  Coordinator(self)
+              func promptDownload(url: URL, suggested: String) {
+                  pendingDownloadURL = url
+                  customSongName = suggested.isEmpty ? "video" : suggested
+                  showNamePrompt = true
               }
 
-              class Coordinator: NSObject, WKNavigationDelegate {
-                  var parent: WebView
-                  weak var webView: WKWebView?
-                  var lastLoadTrigger = 0
-                  private var observations: [NSKeyValueObservation] = []
-
-                  init(_ parent: WebView) {
-                      self.parent = parent
-                      super.init()
-                      NotificationCenter.default.addObserver(
-                          self,
-                          selector: #selector(extractVideos),
-                          name: .extractVideos,
-                          object: nil
-                      )
+              /// تأكيد التحميل: ملف مباشر → تحميل فوري، صفحة منصة → تحميل ذكي عبر السيرفرات
+              func confirmDownload(downloadManager: DownloadManager) {
+                  guard let u = pendingDownloadURL else { return }
+                  if VideoResolver.isDirectMediaURL(u.absoluteString) {
+                      downloadManager.startDownload(url: u.absoluteString, suggestedName: customSongName)
+                  } else {
+                      downloadManager.startSmartDownload(pageURL: u.absoluteString)
                   }
+                  pendingDownloadURL = nil
+              }
 
-                  deinit {
-                      NotificationCenter.default.removeObserver(self)
+              func cancelPendingDownload() { pendingDownloadURL = nil }
+
+              private func refreshNavState() {
+                  guard tabs.indices.contains(currentTabIndex) else { return }
+                  let wv = tabs[currentTabIndex].webView
+                  canGoBack = wv.canGoBack
+                  canGoForward = wv.canGoForward
+                  tabs[currentTabIndex].urlString = wv.url?.absoluteString ?? tabs[currentTabIndex].urlString
+              }
+
+              // MARK: - WKUIDelegate (نوافذ جديدة تفتح في نفس التبويب)
+
+              func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+                  if navigationAction.targetFrame == nil {
+                      webView.load(navigationAction.request)
                   }
+                  return nil
+              }
 
-                  /// ربط حالة الـ WebView بواجهة SwiftUI عبر KVO (تقدم، تحميل، رجوع/تقدم)
-                  func attach(to webView: WKWebView) {
-                      self.webView = webView
-                      let state = parent.state
-                      observations = [
-                          webView.observe(\.estimatedProgress, options: [.new]) { wv, _ in
-                              let value = wv.estimatedProgress
-                              DispatchQueue.main.async { state.progress = value }
-                          },
-                          webView.observe(\.isLoading, options: [.new]) { wv, _ in
-                              let value = wv.isLoading
-                              DispatchQueue.main.async { state.isLoading = value }
-                          },
-                          webView.observe(\.canGoBack, options: [.new]) { wv, _ in
-                              let value = wv.canGoBack
-                              DispatchQueue.main.async { state.canGoBack = value }
-                          },
-                          webView.observe(\.canGoForward, options: [.new]) { wv, _ in
-                              let value = wv.canGoForward
-                              DispatchQueue.main.async { state.canGoForward = value }
-                          }
-                      ]
+              // MARK: - WKNavigationDelegate
+
+              func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+                  webView.evaluateJavaScript("document.querySelectorAll('.ad,.ads,.popup').forEach(e=>e.remove());", completionHandler: nil)
+                  if webView === currentWebView { refreshNavState() }
+              }
+
+              func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+                  if webView === currentWebView { refreshNavState() }
+              }
+
+              func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                  // مخطط الزر العائم: فك الترميز وحوّله لتحميل
+                  if let u = navigationAction.request.url, u.scheme == "vdown-dl" {
+                      decisionHandler(.cancel)
+                      handleMagicDLURL(u)
+                      return
                   }
+                  // لينك ملف وسائط مباشر مضغوط عليه → حمّله بدل فتحه
+                  if navigationAction.navigationType == .linkActivated,
+                     let url = navigationAction.request.url,
+                     VideoResolver.isDirectMediaURL(url.absoluteString) {
+                      decisionHandler(.cancel)
+                      DispatchQueue.main.async { self.promptDownload(url: url, suggested: url.lastPathComponent) }
+                      return
+                  }
+                  decisionHandler(.allow)
+              }
 
-                  // أي لينك ملف وسائط مباشر يتحول لتحميل تلقائي بدلاً من فتحه في المتصفح
-                  func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-                      if navigationAction.navigationType == .linkActivated,
-                         let url = navigationAction.request.url,
-                         VideoResolver.isDirectMediaURL(url.absoluteString) {
-                          DispatchQueue.main.async {
-                              NotificationCenter.default.post(name: .videoURLFound, object: url.absoluteString)
-                          }
-                          decisionHandler(.cancel)
-                          return
+              /// الاستجابة نفسها ملف وسائط؟ (زي تطبيق الموسيقى بالظبط) → حمّلها
+              func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+                  if !navigationResponse.canShowMIMEType {
+                      decisionHandler(.cancel)
+                      let suggested = (navigationResponse.response as? HTTPURLResponse)?.suggestedFilename ?? navigationResponse.response.url?.lastPathComponent
+                      if let u = navigationResponse.response.url {
+                          DispatchQueue.main.async { self.promptDownload(url: u, suggested: suggested ?? "video") }
                       }
-                      decisionHandler(.allow)
+                      return
                   }
+                  if let mime = navigationResponse.response.mimeType?.lowercased(),
+                     mime.contains("video") || mime.contains("audio") {
+                      decisionHandler(.cancel)
+                      let suggested = (navigationResponse.response as? HTTPURLResponse)?.suggestedFilename ?? navigationResponse.response.url?.lastPathComponent
+                      if let u = navigationResponse.response.url {
+                          DispatchQueue.main.async { self.promptDownload(url: u, suggested: suggested ?? "video") }
+                      }
+                      return
+                  }
+                  decisionHandler(.allow)
+              }
 
-                  @objc func extractVideos() {
-                      guard let webView = webView else { return }
-                      let jsCode = """
-                      (function() {
-                          var urls = [];
-                          var videos = document.getElementsByTagName('video');
-                          for (var i = 0; i < videos.length; i++) {
-                              var src = videos[i].src || videos[i].currentSrc;
-                              if (src && src.startsWith('http')) urls.push(src);
-                              var sources = videos[i].getElementsByTagName('source');
-                              for (var j = 0; j < sources.length; j++) {
-                                  if (sources[j].src && sources[j].src.startsWith('http')) urls.push(sources[j].src);
+              private func handleMagicDLURL(_ u: URL) {
+                  guard let comps = URLComponents(url: u, resolvingAgainstBaseURL: false),
+                        let ub64 = comps.queryItems?.first(where: { $0.name == "u" })?.value else { return }
+                  let pad = ub64 + String(repeating: "=", count: (4 - ub64.count % 4) % 4)
+                  guard let data = Data(base64Encoded: pad),
+                        let decoded = String(data: data, encoding: .utf8),
+                        let realURL = URL(string: decoded) else { return }
+                  DispatchQueue.main.async {
+                      self.promptDownload(url: realURL, suggested: realURL.lastPathComponent)
+                  }
+              }
+          }
+
+          /// يعرض WebView التبويب الحالي فقط (التبديل يتم عبر .id)
+          struct WebViewUI: UIViewRepresentable {
+              @ObservedObject var viewModel: WebViewModel
+
+              func makeUIView(context: Context) -> WKWebView {
+                  viewModel.currentWebView
+              }
+
+              func updateUIView(_ uiView: WKWebView, context: Context) {}
+          }
+
+          // MARK: - واجهة المتصفح الكاملة (Web Hub)
+
+          struct BrowserView: View {
+              @ObservedObject var viewModel: WebViewModel
+              @Binding var urlString: String
+              @ObservedObject var downloadManager: DownloadManager
+              @State private var showAlert = false
+              @State private var alertMessage = ""
+
+              var body: some View {
+                  VStack(spacing: 0) {
+                      // شريط العنوان + تحميل ذكي
+                      HStack {
+                          TextField("ابحث أو أدخل الرابط", text: $urlString)
+                              .textFieldStyle(.roundedBorder)
+                              .textInputAutocapitalization(.never)
+                              .autocorrectionDisabled()
+                              .onSubmit { viewModel.loadUrl(urlString) }
+                          Button("ذهاب") {
+                              viewModel.loadUrl(urlString)
+                          }
+                          .buttonStyle(.borderedProminent)
+
+                          Button {
+                              smartDownload()
+                          } label: {
+                              Image(systemName: "square.and.arrow.down.fill")
+                          }
+                          .buttonStyle(.borderedProminent)
+                      }
+                      .padding(.horizontal)
+                      .padding(.top, 8)
+
+                      // مواقع سريعة (زي chips تطبيق الموسيقى)
+                      ScrollView(.horizontal, showsIndicators: false) {
+                          HStack(spacing: 8) {
+                              quickChip("يوتيوب", .red, "https://m.youtube.com")
+                              quickChip("تيك توك", .black, "https://www.tiktok.com")
+                              quickChip("انستجرام", .purple, "https://www.instagram.com")
+                              quickChip("تويتر", .blue, "https://x.com")
+                              quickChip("فيسبوك", .indigo, "https://www.facebook.com")
+                              quickChip("ساوندكلاود", .orange, "https://soundcloud.com")
+                          }
+                          .padding(.horizontal)
+                          .padding(.vertical, 6)
+                      }
+                      .background(Color(.systemGray6))
+
+                      // شريط تقدم التحميل
+                      if viewModel.isLoading {
+                          ProgressView(value: viewModel.progress)
+                              .tint(.blue)
+                      }
+
+                      // WebView التبويب الحالي
+                      WebViewUI(viewModel: viewModel)
+                          .id(viewModel.currentTabIndex)
+                          .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                      // شريط المتصفح السفلي: تنقل + استخراج + زر عائم + تبويبات + تحديث
+                      HStack(spacing: 18) {
+                          Button { viewModel.goBack() } label: {
+                              Image(systemName: "chevron.backward").font(.title3)
+                          }
+                          .disabled(!viewModel.canGoBack)
+                          .opacity(viewModel.canGoBack ? 1 : 0.35)
+
+                          Button { viewModel.goForward() } label: {
+                              Image(systemName: "chevron.forward").font(.title3)
+                          }
+                          .disabled(!viewModel.canGoForward)
+                          .opacity(viewModel.canGoForward ? 1 : 0.35)
+
+                          Spacer()
+
+                          Button { viewModel.grabMedia() } label: {
+                              Image(systemName: "arrow.down.circle.fill").font(.title3).foregroundColor(.blue)
+                          }
+
+                          Button { viewModel.injectFloatingDL() } label: {
+                              Image(systemName: "wand.and.stars").font(.title3).foregroundColor(.purple)
+                          }
+
+                          Button { viewModel.showTabs = true } label: {
+                              ZStack {
+                                  RoundedRectangle(cornerRadius: 5)
+                                      .stroke(Color.primary, lineWidth: 1.5)
+                                      .frame(width: 22, height: 22)
+                                  Text("\(viewModel.tabs.count)").font(.caption2).bold()
                               }
                           }
-                          return urls;
-                      })();
-                      """
-                      webView.evaluateJavaScript(jsCode) { result, _ in
-                          if let urls = result as? [String], !urls.isEmpty {
-                              for url in urls {
-                                  DispatchQueue.main.async {
-                                      NotificationCenter.default.post(name: .videoURLFound, object: url)
+
+                          Spacer()
+
+                          Button {
+                              viewModel.isLoading ? viewModel.stop() : viewModel.refresh()
+                          } label: {
+                              Image(systemName: viewModel.isLoading ? "xmark" : "arrow.clockwise").font(.title3)
+                          }
+                      }
+                      .padding(.horizontal)
+                      .padding(.vertical, 8)
+                      .background(.thinMaterial)
+                  }
+                  .sheet(isPresented: $viewModel.showTabs) {
+                      TabsSheet(viewModel: viewModel, urlString: $urlString)
+                  }
+                  .alert("حفظ باسم", isPresented: $viewModel.showNamePrompt) {
+                      TextField("اسم الملف", text: $viewModel.customSongName)
+                      Button("تحميل") {
+                          viewModel.confirmDownload(downloadManager: downloadManager)
+                      }
+                      Button("إلغاء", role: .cancel) { viewModel.cancelPendingDownload() }
+                  } message: {
+                      Text("عدّل الاسم قبل الحفظ في المكتبة.")
+                  }
+                  .alert("تعذر التحميل", isPresented: $showAlert) {
+                      Button("حسناً", role: .cancel) {}
+                  } message: {
+                      Text(alertMessage)
+                  }
+              }
+
+              private func quickChip(_ name: String, _ color: Color, _ url: String) -> some View {
+                  Button(name) {
+                      urlString = url
+                      viewModel.loadUrl(url)
+                  }
+                  .buttonStyle(.borderedProminent)
+                  .tint(color)
+                  .font(.caption)
+              }
+
+              private func smartDownload() {
+                  downloadManager.startSmartDownload(pageURL: urlString) { success, errorMessage in
+                      DispatchQueue.main.async {
+                          if !success, let message = errorMessage {
+                              alertMessage = message
+                              showAlert = true
+                          }
+                      }
+                  }
+              }
+          }
+
+          // MARK: - مبدّل التبويبات
+
+          struct TabsSheet: View {
+              @ObservedObject var viewModel: WebViewModel
+              @Binding var urlString: String
+              @Environment(\.dismiss) var dismiss
+
+              var body: some View {
+                  NavigationView {
+                      ScrollView {
+                          VStack(spacing: 12) {
+                              ForEach(0..<viewModel.tabs.count, id: \.self) { index in
+                                  HStack {
+                                      VStack(alignment: .leading) {
+                                          Text("تبويب \(index + 1)").font(.headline)
+                                          Text(viewModel.tabs[index].urlString)
+                                              .font(.caption)
+                                              .foregroundColor(.gray)
+                                              .lineLimit(1)
+                                      }
+                                      Spacer()
+                                      Button {
+                                          viewModel.closeTab(at: index)
+                                      } label: {
+                                          Image(systemName: "xmark.circle.fill")
+                                              .foregroundColor(.red)
+                                              .font(.title2)
+                                      }
+                                  }
+                                  .padding()
+                                  .background(viewModel.currentTabIndex == index ? Color.blue.opacity(0.2) : Color.gray.opacity(0.15))
+                                  .cornerRadius(10)
+                                  .onTapGesture {
+                                      viewModel.currentTabIndex = index
+                                      urlString = viewModel.tabs[index].urlString
+                                      dismiss()
                                   }
                               }
-                          }
-                      }
-                  }
 
-                  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-                      if let url = webView.url?.absoluteString {
-                          DispatchQueue.main.async {
-                              if self.parent.urlString != url {
-                                  self.parent.urlString = url
+                              Button {
+                                  viewModel.addNewTab()
+                                  urlString = "https://m.youtube.com"
+                                  dismiss()
+                              } label: {
+                                  Label("تبويب جديد", systemImage: "plus")
+                                      .font(.headline)
+                                      .frame(maxWidth: .infinity)
+                                      .padding()
+                                      .background(Color.blue)
+                                      .foregroundColor(.white)
+                                      .cornerRadius(10)
                               }
                           }
+                          .padding()
                       }
-                  }
-
-                  func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-                      DispatchQueue.main.async { self.parent.state.isLoading = false }
-                  }
-
-                  func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-                      DispatchQueue.main.async { self.parent.state.isLoading = false }
+                      .navigationTitle("التبويبات")
+                      .navigationBarTitleDisplayMode(.inline)
+                      .toolbar { Button("تم") { dismiss() } }
                   }
               }
           }
@@ -809,14 +1045,18 @@ jobs:
               // MARK: - Public API
 
               /// تحميل مباشر (من المتصفح أو رابط وسائط مباشر)
-              func startDownload(url urlString: String) {
+              func startDownload(url urlString: String, suggestedName: String? = nil) {
                   guard let url = URL(string: urlString) else { return }
                   // منع التكرار: شغال بالفعل أو مكتمل
                   if downloads.contains(where: { ($0.mediaURL == url || $0.url == url) && ($0.isDownloading || $0.localURL != nil) }) { return }
 
                   let item = DownloadItem(url: url)
                   item.mediaURL = url
-                  item.proposedName = sanitize(url.lastPathComponent.isEmpty ? "video" : url.lastPathComponent)
+                  if let suggestedName = suggestedName, !suggestedName.isEmpty {
+                      item.proposedName = sanitize(suggestedName)
+                  } else {
+                      item.proposedName = sanitize(url.lastPathComponent.isEmpty ? "video" : url.lastPathComponent)
+                  }
                   DispatchQueue.main.async { self.downloads.insert(item, at: 0) }
                   beginMediaDownload(item: item, mediaURL: url)
               }
@@ -885,10 +1125,12 @@ jobs:
                           case .success(let resolved):
                               item.mediaURL = resolved.url
                               item.backendLabel = resolved.sourceLabel
+                              item.referer = resolved.referer
                               if !resolved.filename.isEmpty { item.proposedName = self.sanitize(resolved.filename) }
                               item.statusText = "جاري التحقق من الرابط…"
                               completion?(true, resolved.sourceLabel)
-                              MediaValidator.probe(url: resolved.url) { ok in
+                              let ref = resolved.referer.isEmpty ? nil : resolved.referer
+                              MediaValidator.probe(url: resolved.url, referer: ref) { ok in
                                   DispatchQueue.main.async {
                                       if item.isCancelled { return }
                                       if ok {
@@ -918,6 +1160,7 @@ jobs:
                   // probe صغير لمعرفة الحجم → تحميل متوازٍ متقطع أو عادي
                   var probe = URLRequest(url: mediaURL, timeoutInterval: 20)
                   probe.setValue(MediaValidator.mobileUA, forHTTPHeaderField: "User-Agent")
+                  if let r = item.referer, !r.isEmpty { probe.setValue(r, forHTTPHeaderField: "Referer") }
                   probe.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
 
                   URLSession.shared.dataTask(with: probe) { data, resp, err in
@@ -947,6 +1190,7 @@ jobs:
               private func startPlainDownload(item: DownloadItem, mediaURL: URL) {
                   var req = URLRequest(url: mediaURL, timeoutInterval: 1800)
                   req.setValue(MediaValidator.mobileUA, forHTTPHeaderField: "User-Agent")
+                  if let r = item.referer, !r.isEmpty { req.setValue(r, forHTTPHeaderField: "Referer") }
                   req.setValue("*/*", forHTTPHeaderField: "Accept")
 
                   let task = session.downloadTask(with: req)
@@ -958,7 +1202,7 @@ jobs:
                   do {
                       let cd = try ChunkedDownloader(
                           url: mediaURL,
-                          referer: "",
+                          referer: item.referer ?? "",
                           userAgent: MediaValidator.mobileUA,
                           totalBytes: totalBytes,
                           chunkSize: chunkedChunkSize,
@@ -1113,6 +1357,7 @@ jobs:
               var chunked: ChunkedDownloader?
               var mediaURL: URL?
               var proposedName: String = ""
+              var referer: String?
               var retryCount = 0
               var isCancelled = false
 
@@ -1127,22 +1372,24 @@ jobs:
           }
           EOF
 
-          # ========== Managers/VideoResolver.swift (سباق متوازٍ: أول سيرفر ينجح يكسب) ==========
+          # ========== Managers/VideoResolver.swift (سباق متوازٍ: cobalt + y2jar + cnvmp3 + workers) ==========
           cat > VideoDownloader/Managers/VideoResolver.swift << 'EOF'
           import Foundation
 
-          /// محرك الاستخراج الذكي — بنفس فكرة الـ Fast Race في تطبيق الموسيقى:
-          /// كل السيرفرات تشتغل مع بعض في نفس اللحظة، وأول واحد يرجع رابط صالح يكسب
+          /// محرك الاستخراج الذكي — سباق متوازٍ بين:
+          /// 1) سيرفرات cobalt (فيديو كامل لمعظم المنصات)
+          /// 2) سيرفرات يوتيوب الأصلية من تطبيق الموسيقى (y2jar / cnvmp3 / mp3juice workers)
+          ///    اللي بتتخطى حظر يوتيوب لأن بتجيب الستريم الأصلي مباشرة
           class VideoResolver {
               struct ResolvedVideo {
                   let url: URL
                   let filename: String
                   let sourceLabel: String
+                  let referer: String
               }
 
               private static let defaultsKey = "customResolverEndpoints"
 
-              /// سيرفرات مجتمعية عامة (القائمة من instances.cobalt.best — قد تتغير)
               static let defaultEndpoints: [String] = [
                   "https://cobalt-api.meowing.de/",
                   "https://cobalt-backend.canine.tools/",
@@ -1150,7 +1397,6 @@ jobs:
                   "https://kityune.imput.net/"
               ]
 
-              /// سيرفرات المستخدم الخاص أولاً ثم الافتراضية
               static var resolverEndpoints: [String] {
                   let custom = UserDefaults.standard.stringArray(forKey: defaultsKey) ?? []
                   return custom + defaultEndpoints
@@ -1168,7 +1414,16 @@ jobs:
                   }
               }
 
-              /// هل الرابط ملف وسائط مباشر بالفعل؟
+              static let mobileUA = MediaValidator.mobileUA
+
+              // سيرفرات يوتيوب (نفس اللي في تطبيق الموسيقى بالظبط)
+              private static let y2jarInfoURL = "https://v2.y2jar.cc/i/"
+              private static let y2jarStreamTokenURL = "https://capi.y2jar.cc/st/a/"
+              private static let y2jarDownloadURL = "https://capi.y2jar.cc/s/"
+              private static let cnvmp3GetInfoURL = "https://cnvmp3.com/get_video_data.php"
+              private static let cnvmp3ConvertURL = "https://cnvmp3.com/download_video_ucep.php"
+              private static let workerURLs = ["https://fancy-sea-5d3d.holy-breeze-fec5.workers.dev/?m=i"]
+
               static func isDirectMediaURL(_ urlString: String) -> Bool {
                   guard let url = URL(string: urlString),
                         let scheme = url.scheme?.lowercased(),
@@ -1178,31 +1433,40 @@ jobs:
                   return extensions.contains { lower.contains($0) }
               }
 
-              /// ⚡ السباق المتوازي: جرّب كل السيرفرات في نفس اللحظة — أول نجاح يفوز
-              static func resolve(pageURL: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
-                  let endpoints = resolverEndpoints
-                  guard !endpoints.isEmpty else {
-                      completion(.failure(NSError(domain: "VideoResolver", code: -1, userInfo: [NSLocalizedDescriptionKey: "لا توجد سيرفرات استخراج"])))
-                      return
+              static func extractYouTubeID(_ s: String) -> String? {
+                  let patterns = [
+                      "(?:youtu\\.be/)([a-zA-Z0-9-_]{11})",
+                      "(?:youtube\\.com/(?:embed/|live/|shorts/|v/|watch/))([a-zA-Z0-9-_]{11})",
+                      "[?&]v=([a-zA-Z0-9-_]{11})"
+                  ]
+                  for p in patterns {
+                      if let r = s.range(of: p, options: .regularExpression),
+                         let m = s[r].range(of: "[a-zA-Z0-9-_]{11}", options: .regularExpression) {
+                          return String(s[r][m])
+                      }
                   }
+                  return nil
+              }
 
+              /// ⚡ السباق المتوازٍ الكبير: كل السيرفرات مع بعض — أول نجاح يفوز
+              static func resolve(pageURL: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
                   let lock = NSLock()
                   var resolved = false
                   var failedCount = 0
+                  var totalContenders = 0
 
-                  for endpoint in endpoints {
-                      requestEndpoint(endpoint, pageURL: pageURL) { result in
+                  func register(_ contender: (@escaping (Result<ResolvedVideo, Error>) -> Void) -> Void) {
+                      totalContenders += 1
+                      contender { result in
                           lock.lock()
-                          let alreadyResolved = resolved
+                          let already = resolved
                           if case .success = result { resolved = true }
                           if case .failure = result { failedCount += 1 }
-                          let allFailed = failedCount >= endpoints.count
+                          let allFailed = failedCount >= totalContenders
                           lock.unlock()
-
-                          if alreadyResolved { return }
+                          if already { return }
                           switch result {
-                          case .success:
-                              completion(result)
+                          case .success: completion(result)
                           case .failure:
                               if allFailed {
                                   completion(.failure(NSError(domain: "VideoResolver", code: -2, userInfo: [NSLocalizedDescriptionKey: "فشلت جميع سيرفرات الاستخراج"])))
@@ -1210,7 +1474,26 @@ jobs:
                           }
                       }
                   }
+
+                  // 1) سيرفرات cobalt (فيديو كامل للمنصات عامة)
+                  for endpoint in resolverEndpoints {
+                      register { done in requestCobalt(endpoint, pageURL: pageURL, completion: done) }
+                  }
+
+                  // 2) سيرفرات يوتيوب الأصلية من تطبيق الموسيقى
+                  if let vid = extractYouTubeID(pageURL) {
+                      register { done in y2jarContender(vid: vid, completion: done) }
+                      register { done in cnvmp3Contender(vid: vid, completion: done) }
+                      register { done in workerContender(vid: vid, completion: done) }
+                  }
+
+                  guard totalContenders > 0 else {
+                      completion(.failure(NSError(domain: "VideoResolver", code: -1, userInfo: [NSLocalizedDescriptionKey: "لا توجد سيرفرات استخراج"])))
+                      return
+                  }
               }
+
+              // MARK: - cobalt
 
               private static func shortLabel(for endpoint: String) -> String {
                   if let host = URL(string: endpoint)?.host {
@@ -1219,12 +1502,11 @@ jobs:
                   return endpoint
               }
 
-              private static func requestEndpoint(_ endpoint: String, pageURL: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+              private static func requestCobalt(_ endpoint: String, pageURL: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
                   guard let url = URL(string: endpoint) else {
                       completion(.failure(NSError(domain: "VideoResolver", code: 1)))
                       return
                   }
-
                   var request = URLRequest(url: url)
                   request.httpMethod = "POST"
                   request.timeoutInterval = 25
@@ -1248,29 +1530,212 @@ jobs:
                           completion(.failure(NSError(domain: "VideoResolver", code: 2)))
                           return
                       }
-
                       let status = json["status"] as? String ?? ""
                       let filename = json["filename"] as? String ?? ""
 
-                      // tunnel / redirect / stream / success: الرابط المباشر في "url"
                       if ["tunnel", "redirect", "stream", "success"].contains(status),
                          let urlString = json["url"] as? String,
                          let direct = URL(string: urlString) {
-                          completion(.success(ResolvedVideo(url: direct, filename: filename, sourceLabel: label)))
+                          completion(.success(ResolvedVideo(url: direct, filename: filename, sourceLabel: label, referer: "")))
                           return
                       }
-
-                      // picker: عدة ملفات (بوستات انستجرام) — خذ أول فيديو
                       if status == "picker", let picker = json["picker"] as? [[String: Any]] {
                           let videoItem = picker.first(where: { ($0["type"] as? String) == "video" }) ?? picker.first
                           if let urlString = videoItem?["url"] as? String, let direct = URL(string: urlString) {
-                              completion(.success(ResolvedVideo(url: direct, filename: filename, sourceLabel: label)))
+                              completion(.success(ResolvedVideo(url: direct, filename: filename, sourceLabel: label, referer: "")))
                               return
                           }
                       }
-
                       completion(.failure(NSError(domain: "VideoResolver", code: 3)))
                   }.resume()
+              }
+
+              // MARK: - y2jar (الأسرع: يرجع ستريم يوتيوب الأصلي M4A بدون تحويل)
+
+              private static func y2jarContender(vid: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+                  guard let infoURL = URL(string: y2jarInfoURL + vid) else {
+                      completion(.failure(NSError(domain: "VideoResolver", code: 10)))
+                      return
+                  }
+                  var req = URLRequest(url: infoURL, timeoutInterval: 12)
+                  req.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+                  req.setValue("application/json", forHTTPHeaderField: "Accept")
+                  req.setValue("https://v2.y2jar.cc/", forHTTPHeaderField: "Referer")
+
+                  URLSession.shared.dataTask(with: req) { data, _, err in
+                      guard let data = data, err == nil,
+                            let info = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                            let title = info["title"] as? String else {
+                          completion(.failure(NSError(domain: "VideoResolver", code: 10)))
+                          return
+                      }
+                      guard let tokenURL = URL(string: y2jarStreamTokenURL + vid + "?a=") else {
+                          completion(.failure(NSError(domain: "VideoResolver", code: 10)))
+                          return
+                      }
+                      var tr = URLRequest(url: tokenURL, timeoutInterval: 12)
+                      tr.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+                      tr.setValue("application/json", forHTTPHeaderField: "Accept")
+                      tr.setValue("https://v2.y2jar.cc/", forHTTPHeaderField: "Referer")
+                      tr.setValue("https://v2.y2jar.cc", forHTTPHeaderField: "Origin")
+
+                      URLSession.shared.dataTask(with: tr) { tdata, _, terr in
+                          guard let tdata = tdata, terr == nil,
+                                let tj = (try? JSONSerialization.jsonObject(with: tdata)) as? [String: Any],
+                                let token = tj["token"] as? String, token.count > 10,
+                                let enc = token.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+                                let dlURL = URL(string: y2jarDownloadURL + vid + "?token=" + enc) else {
+                              completion(.failure(NSError(domain: "VideoResolver", code: 11)))
+                              return
+                          }
+                          let name = cleanTitle(title)
+                          completion(.success(ResolvedVideo(url: dlURL, filename: name + ".m4a", sourceLabel: "Y2JAR⚡", referer: "https://v2.y2jar.cc/")))
+                      }.resume()
+                  }.resume()
+              }
+
+              // MARK: - cnvmp3 (تحويل MP3 سريع)
+
+              private static func cnvmp3Contender(vid: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+                  let ytURL = "https://www.youtube.com/watch?v=\(vid)"
+                  guard let infoURL = URL(string: cnvmp3GetInfoURL), let convURL = URL(string: cnvmp3ConvertURL) else {
+                      completion(.failure(NSError(domain: "VideoResolver", code: 20)))
+                      return
+                  }
+                  var infoReq = URLRequest(url: infoURL, timeoutInterval: 15)
+                  infoReq.httpMethod = "POST"
+                  infoReq.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+                  infoReq.setValue("application/json", forHTTPHeaderField: "Accept")
+                  infoReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  infoReq.setValue("https://cnvmp3.com/v55", forHTTPHeaderField: "Referer")
+                  infoReq.setValue("https://cnvmp3.com", forHTTPHeaderField: "Origin")
+                  infoReq.httpBody = try? JSONSerialization.data(withJSONObject: ["url": ytURL, "token": "1234"])
+
+                  URLSession.shared.dataTask(with: infoReq) { data, _, err in
+                      var resolvedTitle = ""
+                      if let data = data, err == nil,
+                         let j = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                         let t = j["title"] as? String, !t.isEmpty {
+                          resolvedTitle = t
+                      }
+
+                      var convReq = URLRequest(url: convURL, timeoutInterval: 120)
+                      convReq.httpMethod = "POST"
+                      convReq.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+                      convReq.setValue("application/json", forHTTPHeaderField: "Accept")
+                      convReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                      convReq.setValue("https://cnvmp3.com/v55", forHTTPHeaderField: "Referer")
+                      convReq.setValue("https://cnvmp3.com", forHTTPHeaderField: "Origin")
+                      let convBody: [String: Any] = ["url": ytURL, "quality": 4, "title": resolvedTitle, "formatValue": 1]
+                      convReq.httpBody = try? JSONSerialization.data(withJSONObject: convBody)
+
+                      URLSession.shared.dataTask(with: convReq) { cdata, _, cerr in
+                          guard let cdata = cdata, cerr == nil,
+                                let cj = (try? JSONSerialization.jsonObject(with: cdata)) as? [String: Any],
+                                (cj["success"] as? Bool) != false,
+                                let dl = cj["download_link"] as? String, !dl.isEmpty,
+                                let dlURL = URL(string: dl) else {
+                              completion(.failure(NSError(domain: "VideoResolver", code: 21)))
+                              return
+                          }
+                          let name = resolvedTitle.isEmpty ? cleanTitle("YouTube \(vid)") : cleanTitle(resolvedTitle)
+                          completion(.success(ResolvedVideo(url: dlURL, filename: name + ".mp3", sourceLabel: "cnvmp3", referer: "https://cnvmp3.com/v55")))
+                      }.resume()
+                  }.resume()
+              }
+
+              // MARK: - mp3juice workers (مع polling للتحويلات الطويلة)
+
+              private static func workerContender(vid: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+                  guard let base = workerURLs.first else {
+                      completion(.failure(NSError(domain: "VideoResolver", code: 30)))
+                      return
+                  }
+                  let ts = Int(Date().timeIntervalSince1970 * 1000)
+                  guard let u = URL(string: "\(base)&v=\(vid)&f=mp3&_=\(ts)") else {
+                      completion(.failure(NSError(domain: "VideoResolver", code: 30)))
+                      return
+                  }
+                  var req = URLRequest(url: u, timeoutInterval: 15)
+                  req.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+                  req.setValue("https://mp3juice.sc/", forHTTPHeaderField: "Referer")
+                  req.setValue("https://mp3juice.sc", forHTTPHeaderField: "Origin")
+                  req.setValue("application/json,*/*", forHTTPHeaderField: "Accept")
+
+                  URLSession.shared.dataTask(with: req) { data, _, _ in
+                      guard let data = data,
+                            let d = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                            (d["error"] as? Int ?? 0) == 0 else {
+                          completion(.failure(NSError(domain: "VideoResolver", code: 30)))
+                          return
+                      }
+                      if let dl = d["downloadURL"] as? String, !dl.isEmpty,
+                         let du = URL(string: decodeWorkerURL(dl)) {
+                          completion(.success(ResolvedVideo(url: du, filename: "", sourceLabel: "Mp3Juice", referer: "https://mp3juice.sc/")))
+                          return
+                      }
+                      if let purl = d["progressURL"] as? String, !purl.isEmpty {
+                          workerPoll(vid: vid, progURL: purl, ticks: 0, completion: completion)
+                          return
+                      }
+                      completion(.failure(NSError(domain: "VideoResolver", code: 30)))
+                  }.resume()
+              }
+
+              private static func workerPoll(vid: String, progURL: String, ticks: Int, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+                  if ticks > 90 {
+                      completion(.failure(NSError(domain: "VideoResolver", code: 31)))
+                      return
+                  }
+                  DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
+                      guard let u = URL(string: progURL) else {
+                          completion(.failure(NSError(domain: "VideoResolver", code: 31)))
+                          return
+                      }
+                      var req = URLRequest(url: u, timeoutInterval: 10)
+                      req.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+                      req.setValue("https://mp3juice.sc/", forHTTPHeaderField: "Referer")
+                      URLSession.shared.dataTask(with: req) { data, _, _ in
+                          guard let data = data,
+                                let d = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                              workerPoll(vid: vid, progURL: progURL, ticks: ticks + 1, completion: completion)
+                              return
+                          }
+                          let status = d["status"] as? String ?? ""
+                          if status == "download", let dl = d["downloadURL"] as? String,
+                             let du = URL(string: decodeWorkerURL(dl)) {
+                              completion(.success(ResolvedVideo(url: du, filename: "", sourceLabel: "Mp3Juice", referer: "https://mp3juice.sc/")))
+                              return
+                          }
+                          workerPoll(vid: vid, progURL: progURL, ticks: ticks + 1, completion: completion)
+                      }.resume()
+                  }
+              }
+
+              private static func decodeWorkerURL(_ s: String) -> String {
+                  if s.contains("m=d&u=") || s.contains("m=p&u=") {
+                      guard let comps = URLComponents(string: s),
+                            let u = comps.queryItems?.first(where: { $0.name == "u" })?.value else { return s }
+                      let pad = u + String(repeating: "=", count: (4 - u.count % 4) % 4)
+                      if let data = Data(base64Encoded: pad), let dec = String(data: data, encoding: .utf8) { return dec }
+                  }
+                  return s
+              }
+
+              // MARK: - تنظيف العناوين
+
+              private static func cleanTitle(_ raw: String) -> String {
+                  var s = raw
+                  let patterns = [
+                      "\\(Official[^)]*\\)", "\\(Lyrics?[^)]*\\)", "\\[Official[^\\]]*\\]",
+                      "- Topic", "\\s*\\|.*$", "Official Video", "Official Audio", "Official Music Video"
+                  ]
+                  for p in patterns {
+                      s = s.replacingOccurrences(of: p, with: "", options: [.regularExpression, .caseInsensitive])
+                  }
+                  s = s.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                  s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                  return s.isEmpty ? raw : s
               }
           }
           EOF
