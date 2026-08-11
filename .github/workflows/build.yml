@@ -127,6 +127,7 @@ jobs:
               @ObservedObject var downloadManager: DownloadManager
               @State private var selectedVideo: DownloadItem?
               @State private var showPlayer = false
+              @State private var showCorruptAlert = false
 
               var body: some View {
                   NavigationView {
@@ -155,9 +156,14 @@ jobs:
                               )
                               .contentShape(Rectangle())
                               .onTapGesture {
-                                  if !item.isDownloading, item.localURL != nil {
-                                      selectedVideo = item
-                                      showPlayer = true
+                                  if !item.isDownloading, let url = item.localURL {
+                                      // فحص سريع: الملف وسائط صالحة ولا تالف؟
+                                      if case .valid = MediaValidator.validateFile(at: url) {
+                                          selectedVideo = item
+                                          showPlayer = true
+                                      } else {
+                                          showCorruptAlert = true
+                                      }
                                   }
                               }
                               .swipeActions {
@@ -174,6 +180,11 @@ jobs:
                           if let video = selectedVideo, let localURL = video.localURL {
                               VideoPlayerView(videoURL: localURL, videoTitle: video.proposedName.isEmpty ? video.url.lastPathComponent : video.proposedName)
                           }
+                      }
+                      .alert("ملف تالف", isPresented: $showCorruptAlert) {
+                          Button("حسناً", role: .cancel) {}
+                      } message: {
+                          Text("الملف ده مش وسائط صالحة — احذفه من المكتبة وأعد تحميله.")
                       }
                   }
                   .navigationViewStyle(StackNavigationViewStyle())
@@ -276,6 +287,7 @@ jobs:
               @StateObject private var translator = VideoTranslator()
               @State private var showSyncControls = false
               @State private var showTranslation = false
+              @State private var showPlayError = false
 
               // حفظ تلقائي لموضع التشغيل كل 5 ثواني (مش بس عند الخروج)
               private let saveTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
@@ -410,11 +422,24 @@ jobs:
                           if t > 1 { UserDefaults.standard.set(t, forKey: progressKey) }
                       }
                   }
+                  .alert("مشكلة في التشغيل", isPresented: $showPlayError) {
+                      Button("حسناً", role: .cancel) {}
+                  } message: {
+                      Text("الملف قد يكون تالفاً أو الصيغة غير مدعومة — احذفه من المكتبة وأعد تحميله.")
+                  }
                   .onAppear {
                       let asset = AVAsset(url: videoURL)
                       let playerItem = AVPlayerItem(asset: asset)
                       let newPlayer = AVPlayer(playerItem: playerItem)
                       player = newPlayer
+
+                      // كشف فشل التشغيل (ملف تالف أو صيغة غير مدعومة) بعد 3 ثواني
+                      Task { @MainActor in
+                          try? await Task.sleep(nanoseconds: 3_000_000_000)
+                          if newPlayer.currentItem?.status == .failed {
+                              showPlayError = true
+                          }
+                      }
 
                       // استئناف ذكي: ارجع لآخر موضع توقف بعد ما المدة تتحمل
                       savedProgress = UserDefaults.standard.double(forKey: progressKey)
@@ -675,16 +700,40 @@ jobs:
                   currentWebView.evaluateJavaScript(js, completionHandler: nil)
               }
 
-              /// استخراج رابط وسائط مباشر من عناصر الصفحة
+              /// استخراج الفيديو الرئيسي (مش الإعلان):
+              /// نظام نقاط — الأكبر مساحةً + الأطول مدةً + الشغال فعلاً، مع تجاهل دومينات الإعلانات
               func grabMedia() {
                   let js = """
                   (function(){
-                      var m = document.querySelectorAll('video,audio,source');
-                      for(var i=0;i<m.length;i++){
-                          var s = m[i].src || m[i].currentSrc;
-                          if(s && s.startsWith('http')) return s;
+                      var adHosts = ['doubleclick','googleads','googlesyndication','adsystem','scorecardresearch','adnxs','outbrain','taboola','facebook.com/tr','ads.','sponsor'];
+                      function isAd(u){
+                          try {
+                              var h = new URL(u).hostname;
+                              for (var i=0;i<adHosts.length;i++){ if (h.indexOf(adHosts[i]) !== -1) return true; }
+                          } catch(e){}
+                          return false;
                       }
-                      return null;
+                      var vids = document.querySelectorAll('video');
+                      var best = null, bestScore = -1;
+                      for (var i=0;i<vids.length;i++){
+                          var v = vids[i];
+                          var src = v.currentSrc || v.src;
+                          if (!src || src.indexOf('http') !== 0) continue;
+                          if (isAd(src)) continue;
+                          var area = (v.offsetWidth||320) * (v.offsetHeight||180);
+                          var dur = (isFinite(v.duration) && v.duration > 0) ? v.duration : 0;
+                          var score = area + dur * 5000;
+                          if (v.paused === false) score += 1000000;
+                          if (score > bestScore) { bestScore = score; best = src; }
+                      }
+                      if (!best) {
+                          var m = document.querySelectorAll('audio,source');
+                          for (var j=0;j<m.length;j++){
+                              var s2 = m[j].src || m[j].currentSrc;
+                              if (s2 && s2.indexOf('http') === 0 && !isAd(s2)) { best = s2; break; }
+                          }
+                      }
+                      return best;
                   })();
                   """
                   currentWebView.evaluateJavaScript(js) { [weak self] result, _ in
@@ -1026,6 +1075,7 @@ jobs:
           # ========== Managers/DownloadManager.swift (محرك التحميل v2 — مستوحى من تطبيق الموسيقى) ==========
           cat > VideoDownloader/Managers/DownloadManager.swift << 'EOF'
           import SwiftUI
+          import AVFoundation
 
           /// مدير التحميل — نفس فلسفة DownloadCenter في تطبيق الموسيقى:
           /// سباق متوازٍ للسيرفرات + تحقق من الملفات + إعادة محاولة + تحميل متقطع متوازٍ
@@ -1099,6 +1149,8 @@ jobs:
                   item.task?.cancel()
                   item.chunked?.cancel()
                   item.chunked = nil
+                  item.hlsTask?.cancel()
+                  item.hlsTask = nil
                   DispatchQueue.main.async {
                       item.isDownloading = false
                       item.failedMessage = "تم الإلغاء"
@@ -1178,6 +1230,7 @@ jobs:
 
                   URLSession.shared.dataTask(with: probe) { data, resp, err in
                       var total: Int64 = 0
+                      let mime = ((resp as? HTTPURLResponse)?.mimeType ?? "").lowercased()
                       if let hr = resp as? HTTPURLResponse {
                           if let cr = (hr.allHeaderFields["Content-Range"] as? String) ?? (hr.allHeaderFields["content-range"] as? String),
                              let slash = cr.lastIndex(of: "/") {
@@ -1189,7 +1242,12 @@ jobs:
                       }
                       DispatchQueue.main.async {
                           if item.isCancelled { return }
-                          if err == nil, total > self.chunkedThreshold {
+                          // بث HLS (m3u8) → طريقة آبل الرسمية AVAssetDownloadURLSession
+                          if mime.contains("mpegurl") || mime.contains("x-mpegurl") ||
+                             mediaURL.absoluteString.lowercased().contains(".m3u8") {
+                              item.statusText = "تحميل بث HLS…"
+                              self.startHLSDownload(item: item, mediaURL: mediaURL)
+                          } else if err == nil, total > self.chunkedThreshold {
                               item.statusText = "تحميل سريع متوازٍ…"
                               self.startChunkedDownload(item: item, mediaURL: mediaURL, totalBytes: total)
                           } else {
@@ -1244,6 +1302,26 @@ jobs:
                   } catch {
                       startPlainDownload(item: item, mediaURL: mediaURL)
                   }
+              }
+
+              private lazy var hlsSession: AVAssetDownloadURLSession = {
+                  let config = URLSessionConfiguration.background(withIdentifier: "com.yourapp.hls")
+                  config.isDiscretionary = false
+                  return AVAssetDownloadURLSession(configuration: config, delegate: self, delegateQueue: .main)
+              }()
+
+              /// تحميل بث HLS (m3u8) بطريقة آبل الرسمية — بيحفظ حزمة تشتغل في المشغل
+              private func startHLSDownload(item: DownloadItem, mediaURL: URL) {
+                  item.isDownloading = true
+                  item.failedMessage = nil
+                  let asset = AVURLAsset(url: mediaURL)
+                  let task = hlsSession.makeAssetDownloadTask(
+                      asset: asset,
+                      assetTitle: item.proposedName.isEmpty ? "video" : item.proposedName,
+                      assetArtworkData: nil,
+                      options: nil)
+                  item.hlsTask = task
+                  task.resume()
               }
 
               // MARK: - إنهاء / فشل
@@ -1354,6 +1432,14 @@ jobs:
 
               func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
                   guard let error = error else { return }
+                  // مهام HLS الفاشلة
+                  if let assetTask = task as? AVAssetDownloadTask {
+                      guard let item = downloads.first(where: { $0.hlsTask == assetTask }) else { return }
+                      if item.isCancelled { return }
+                      if (error as NSError).code == -999 { return }
+                      failOrRetry(item: item, message: error.localizedDescription)
+                      return
+                  }
                   guard let downloadTask = task as? URLSessionDownloadTask else { return }
                   guard let item = downloads.first(where: { $0.task == downloadTask }) else { return }
                   if item.isCancelled { return }
@@ -1363,11 +1449,46 @@ jobs:
               }
           }
 
+          extension DownloadManager: AVAssetDownloadDelegate {
+              func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didFinishDownloadingTo location: URL) {
+                  guard let item = downloads.first(where: { $0.hlsTask == assetDownloadTask }) else { return }
+                  if item.isCancelled { return }
+                  let fm = FileManager.default
+                  let name = sanitize(item.proposedName.isEmpty ? "video" : item.proposedName)
+                  let dest = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                      .appendingPathComponent(name + ".movpkg")
+                  try? fm.removeItem(at: dest)
+                  do {
+                      try fm.moveItem(at: location, to: dest)
+                      try? fm.setAttributes([.protectionKey: FileProtectionType.none], ofItemAtPath: dest.path)
+                      item.localURL = dest
+                      item.progress = 1.0
+                      item.isDownloading = false
+                      item.statusText = "تم التحميل ✅"
+                  } catch {
+                      failOrRetry(item: item, message: "تعذر حفظ بث HLS")
+                  }
+              }
+
+              func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didLoad timeRange: CMTimeRange, totalTimeRangesLoaded: [CMTimeRange], timeRangeExpectedToLoad: CMTimeRange) {
+                  guard let item = downloads.first(where: { $0.hlsTask == assetDownloadTask }) else { return }
+                  if item.isCancelled { return }
+                  let loaded = totalTimeRangesLoaded.reduce(0.0) { $0 + $1.duration.seconds }
+                  let total = timeRangeExpectedToLoad.duration.seconds
+                  if total > 0 {
+                      item.progress = Float(min(0.999, loaded / total))
+                      item.isDownloading = true
+                      item.statusText = String(format: "تحميل HLS… %.0f%%", item.progress * 100)
+                  }
+              }
+          }
+
           class DownloadItem: Identifiable, ObservableObject {
               let id = UUID()
               let url: URL
               var task: URLSessionDownloadTask?
               var chunked: ChunkedDownloader?
+              var hlsTask: AVAssetDownloadTask?
               var mediaURL: URL?
               var proposedName: String = ""
               var referer: String?
@@ -1499,6 +1620,7 @@ jobs:
                       register { done in cnvmp3Contender(vid: vid, completion: done) }
                       register { done in workerContender(vid: vid, completion: done) }
                       register { done in pipedContender(vid: vid, completion: done) }
+                      register { done in invidiousContender(vid: vid, completion: done) }
                   }
 
                   // 3) اكتشاف سيرفرات cobalt الشغّالة تلقائياً وقت التشغيل (cobalt.directory)
@@ -1879,6 +2001,91 @@ jobs:
                   scan(json, depth: 0)
                   var seen = Set<String>()
                   return out.filter { seen.insert($0).inserted }
+              }
+
+              // MARK: - Invidious (مسار يوتيوب إضافي: latest_version → googlevideo مباشر)
+
+              private static var cachedInvidious: [String] = []
+              private static var invidiousCacheTime = Date.distantPast
+
+              private static func invidiousContender(vid: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+                  fetchInvidiousList { uris in
+                      let chosen = Array(uris.prefix(4))
+                      guard !chosen.isEmpty else {
+                          completion(.failure(NSError(domain: "VideoResolver", code: 60)))
+                          return
+                      }
+                      let lock = NSLock()
+                      var resolved = false
+                      var fails = 0
+                      for uri in chosen {
+                          probeRedirect(uri + "/latest_version?id=" + vid) { final in
+                              lock.lock()
+                              let already = resolved
+                              if final != nil { resolved = true } else { fails += 1 }
+                              let all = fails >= chosen.count
+                              lock.unlock()
+                              if already { return }
+                              if let final = final {
+                                  completion(.success(ResolvedVideo(url: final, filename: "", sourceLabel: "Invidious", referer: "")))
+                              } else if all {
+                                  completion(.failure(NSError(domain: "VideoResolver", code: 61)))
+                              }
+                          }
+                      }
+                  }
+              }
+
+              /// يتبع الـ redirects ويرجع الرابط النهائي المباشر
+              private static func probeRedirect(_ urlString: String, completion: @escaping (URL?) -> Void) {
+                  guard let u = URL(string: urlString) else { completion(nil); return }
+                  var req = URLRequest(url: u, timeoutInterval: 12)
+                  req.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+                  req.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
+                  URLSession.shared.dataTask(with: req) { _, resp, err in
+                      guard err == nil,
+                            let http = resp as? HTTPURLResponse,
+                            (http.statusCode == 200 || http.statusCode == 206),
+                            let final = resp?.url,
+                            final.absoluteString != urlString else {
+                          completion(nil)
+                          return
+                      }
+                      completion(final)
+                  }.resume()
+              }
+
+              /// قائمة سيرفرات Invidious الحية من api.invidious.io
+              private static func fetchInvidiousList(completion: @escaping ([String]) -> Void) {
+                  if !cachedInvidious.isEmpty, Date().timeIntervalSince(invidiousCacheTime) < 600 {
+                      completion(cachedInvidious)
+                      return
+                  }
+                  guard let url = URL(string: "https://api.invidious.io/instances.json") else {
+                      completion(cachedInvidious)
+                      return
+                  }
+                  var req = URLRequest(url: url, timeoutInterval: 10)
+                  req.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+                  URLSession.shared.dataTask(with: req) { data, _, err in
+                      guard let data = data, err == nil,
+                            let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[Any]] else {
+                          completion(cachedInvidious)
+                          return
+                      }
+                      var out: [String] = []
+                      for entry in arr {
+                          guard entry.count == 2, let info = entry[1] as? [String: Any] else { continue }
+                          if (info["type"] as? String) != "https" { continue }
+                          if (info["api"] as? Bool) != true { continue }
+                          if let uri = info["uri"] as? String, uri.hasPrefix("https://") { out.append(uri) }
+                      }
+                      if !out.isEmpty {
+                          cachedInvidious = out
+                          invidiousCacheTime = Date()
+                      }
+                      completion(out.isEmpty ? cachedInvidious : out)
+                  }.resume()
               }
 
               // MARK: - تنظيف العناوين
