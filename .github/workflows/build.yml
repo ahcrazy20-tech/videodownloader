@@ -573,6 +573,7 @@ jobs:
               @Published var showNamePrompt = false
               @Published var customSongName = ""
               var pendingDownloadURL: URL?
+              var pendingIsDirect = false
               private var observations: [NSKeyValueObservation] = []
 
               override init() {
@@ -689,15 +690,16 @@ jobs:
                   currentWebView.evaluateJavaScript(js) { [weak self] result, _ in
                       guard let self = self else { return }
                       if let s = result as? String, let u = URL(string: s) {
-                          DispatchQueue.main.async { self.promptDownload(url: u, suggested: u.lastPathComponent) }
+                          DispatchQueue.main.async { self.promptDownload(url: u, suggested: u.lastPathComponent, isDirect: true) }
                       } else if let page = self.currentWebView.url {
-                          DispatchQueue.main.async { self.promptDownload(url: page, suggested: page.lastPathComponent) }
+                          DispatchQueue.main.async { self.promptDownload(url: page, suggested: page.lastPathComponent, isDirect: false) }
                       }
                   }
               }
 
-              func promptDownload(url: URL, suggested: String) {
+              func promptDownload(url: URL, suggested: String, isDirect: Bool = false) {
                   pendingDownloadURL = url
+                  pendingIsDirect = isDirect
                   customSongName = suggested.isEmpty ? "video" : suggested
                   showNamePrompt = true
               }
@@ -705,15 +707,20 @@ jobs:
               /// تأكيد التحميل: ملف مباشر → تحميل فوري، صفحة منصة → تحميل ذكي عبر السيرفرات
               func confirmDownload(downloadManager: DownloadManager) {
                   guard let u = pendingDownloadURL else { return }
-                  if VideoResolver.isDirectMediaURL(u.absoluteString) {
+                  // ملف مباشر (ستريم/وسائط ملتقطة) → تحميل فوري؛ صفحة منصة → استخراج ذكي
+                  if pendingIsDirect || VideoResolver.isDirectMediaURL(u.absoluteString) {
                       downloadManager.startDownload(url: u.absoluteString, suggestedName: customSongName)
                   } else {
                       downloadManager.startSmartDownload(pageURL: u.absoluteString)
                   }
                   pendingDownloadURL = nil
+                  pendingIsDirect = false
               }
 
-              func cancelPendingDownload() { pendingDownloadURL = nil }
+              func cancelPendingDownload() {
+                  pendingDownloadURL = nil
+                  pendingIsDirect = false
+              }
 
               private func refreshNavState() {
                   guard tabs.indices.contains(currentTabIndex) else { return }
@@ -755,7 +762,7 @@ jobs:
                      let url = navigationAction.request.url,
                      VideoResolver.isDirectMediaURL(url.absoluteString) {
                       decisionHandler(.cancel)
-                      DispatchQueue.main.async { self.promptDownload(url: url, suggested: url.lastPathComponent) }
+                      DispatchQueue.main.async { self.promptDownload(url: url, suggested: url.lastPathComponent, isDirect: true) }
                       return
                   }
                   decisionHandler(.allow)
@@ -767,7 +774,7 @@ jobs:
                       decisionHandler(.cancel)
                       let suggested = (navigationResponse.response as? HTTPURLResponse)?.suggestedFilename ?? navigationResponse.response.url?.lastPathComponent
                       if let u = navigationResponse.response.url {
-                          DispatchQueue.main.async { self.promptDownload(url: u, suggested: suggested ?? "video") }
+                          DispatchQueue.main.async { self.promptDownload(url: u, suggested: suggested ?? "video", isDirect: true) }
                       }
                       return
                   }
@@ -776,7 +783,7 @@ jobs:
                       decisionHandler(.cancel)
                       let suggested = (navigationResponse.response as? HTTPURLResponse)?.suggestedFilename ?? navigationResponse.response.url?.lastPathComponent
                       if let u = navigationResponse.response.url {
-                          DispatchQueue.main.async { self.promptDownload(url: u, suggested: suggested ?? "video") }
+                          DispatchQueue.main.async { self.promptDownload(url: u, suggested: suggested ?? "video", isDirect: true) }
                       }
                       return
                   }
@@ -790,8 +797,9 @@ jobs:
                   guard let data = Data(base64Encoded: pad),
                         let decoded = String(data: data, encoding: .utf8),
                         let realURL = URL(string: decoded) else { return }
+                  let direct = VideoResolver.isDirectMediaURL(decoded)
                   DispatchQueue.main.async {
-                      self.promptDownload(url: realURL, suggested: realURL.lastPathComponent)
+                      self.promptDownload(url: realURL, suggested: realURL.lastPathComponent, isDirect: direct)
                   }
               }
           }
@@ -1063,12 +1071,17 @@ jobs:
 
               /// تحميل ذكي: استخراج رابط الصفحة عبر سيرفرات cobalt (سباق متوازٍ) ثم تحميل الملف
               func startSmartDownload(pageURL: String, completion: ((Bool, String?) -> Void)? = nil) {
-                  // رابط وسائط مباشر؟ وفّر الاستخراج وحمّل فوراً
-                  if VideoResolver.isDirectMediaURL(pageURL) {
-                      startDownload(url: pageURL)
-                      completion?(true, nil)
-                      return
-                  }
+                            // رابط وسائط مباشر أو ستريم بث (videoplayback / googlevideo / m3u8)؟
+                            // حمّله فوراً بدون استخراج — ده إصلاح خطأ "videoplayback"
+                            let lower = pageURL.lowercased()
+                            if VideoResolver.isDirectMediaURL(pageURL) ||
+                               lower.contains("videoplayback") ||
+                               lower.contains("googlevideo.com") ||
+                               lower.contains(".m3u8") {
+                                startDownload(url: pageURL)
+                                completion?(true, nil)
+                                return
+                            }
 
                   guard let pageUrl = URL(string: pageURL) else {
                       completion?(false, "الرابط غير صالح")
@@ -1141,7 +1154,7 @@ jobs:
                                   }
                               }
                           case .failure:
-                              completion?(false, "لم يتمكن أي سيرفر من استخراج الرابط. جرب زر استخراج فيديوهات داخل المتصفح، أو أضف سيرفر cobalt خاص من الإعدادات.")
+                              completion?(false, "لم يتمكن أي سيرفر من استخراج الرابط. افتح صفحة الفيديو ودوس زر ⬇ أو تحميل العائم في شريط المتصفح، أو أضف سيرفر cobalt خاص من تبويب الترجمة لضمان الشغل دايماً.")
                               self.failOrRetry(item: item, message: "فشل الاستخراج")
                           }
                       }
@@ -1480,12 +1493,16 @@ jobs:
                       register { done in requestCobalt(endpoint, pageURL: pageURL, completion: done) }
                   }
 
-                  // 2) سيرفرات يوتيوب الأصلية من تطبيق الموسيقى
+                  // 2) سيرفرات يوتيوب الأصلية من تطبيق الموسيقى + Piped بروابط googlevideo مباشرة
                   if let vid = extractYouTubeID(pageURL) {
                       register { done in y2jarContender(vid: vid, completion: done) }
                       register { done in cnvmp3Contender(vid: vid, completion: done) }
                       register { done in workerContender(vid: vid, completion: done) }
+                      register { done in pipedContender(vid: vid, completion: done) }
                   }
+
+                  // 3) اكتشاف سيرفرات cobalt الشغّالة تلقائياً وقت التشغيل (cobalt.directory)
+                  register { done in discoverAndRaceCobalt(pageURL: pageURL, completion: done) }
 
                   guard totalContenders > 0 else {
                       completion(.failure(NSError(domain: "VideoResolver", code: -1, userInfo: [NSLocalizedDescriptionKey: "لا توجد سيرفرات استخراج"])))
@@ -1720,6 +1737,148 @@ jobs:
                       if let data = Data(base64Encoded: pad), let dec = String(data: data, encoding: .utf8) { return dec }
                   }
                   return s
+              }
+
+              // MARK: - Piped (روابط يوتيوب المباشرة من googlevideo)
+
+              private static let pipedMirrors = [
+                  "https://pipedapi.kavin.rocks",
+                  "https://pipedapi.adminforge.de",
+                  "https://pipedapi.leptons.xyz",
+                  "https://api.piped.private.coffee",
+                  "https://piped-api.lunar.icu"
+              ]
+
+              private static func pipedContender(vid: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+                  pipedTry(pipedMirrors, index: 0, vid: vid, completion: completion)
+              }
+
+              private static func pipedTry(_ mirrors: [String], index: Int, vid: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+                  guard index < mirrors.count else {
+                      completion(.failure(NSError(domain: "VideoResolver", code: 40)))
+                      return
+                  }
+                  guard let url = URL(string: mirrors[index] + "/streams/" + vid) else {
+                      pipedTry(mirrors, index: index + 1, vid: vid, completion: completion)
+                      return
+                  }
+                  var req = URLRequest(url: url, timeoutInterval: 12)
+                  req.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+
+                  URLSession.shared.dataTask(with: req) { data, _, err in
+                      guard let data = data, err == nil,
+                            let j = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                          pipedTry(mirrors, index: index + 1, vid: vid, completion: completion)
+                          return
+                      }
+                      let title = cleanTitle(j["title"] as? String ?? "YouTube \(vid)")
+
+                      var bestURL: URL? = nil
+                      var isVideo = false
+                      if let vs = j["videoStreams"] as? [[String: Any]] {
+                          let mp4s = vs.filter { (($0["mimeType"] as? String) ?? "").contains("mp4") }
+                          let chosen = mp4s.max { (($0["bitrate"] as? Int) ?? 0) < (($1["bitrate"] as? Int) ?? 0) }
+                          if let u = chosen?["url"] as? String, let uu = URL(string: u) {
+                              bestURL = uu
+                              isVideo = true
+                          }
+                      }
+                      if bestURL == nil, let aus = j["audioStreams"] as? [[String: Any]] {
+                          let m4as = aus.filter { (($0["mimeType"] as? String) ?? "").contains("mp4") }
+                          if let u = (m4as.first ?? aus.first)?["url"] as? String, let uu = URL(string: u) {
+                              bestURL = uu
+                          }
+                      }
+                      guard let final = bestURL else {
+                          pipedTry(mirrors, index: index + 1, vid: vid, completion: completion)
+                          return
+                      }
+                      completion(.success(ResolvedVideo(url: final, filename: title + (isVideo ? ".mp4" : ".m4a"), sourceLabel: "Piped", referer: "")))
+                  }.resume()
+              }
+
+              // MARK: - اكتشاف سيرفرات cobalt الشغّالة تلقائياً (cobalt.directory API)
+
+              private static var cachedInstances: [String] = []
+              private static var cacheTime = Date.distantPast
+              private static let directoryAPI = "https://cobalt.directory/api/working?type=api"
+
+              private static func discoverAndRaceCobalt(pageURL: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+                  fetchInstanceList { endpoints in
+                      let chosen = Array(endpoints.prefix(6))
+                      guard !chosen.isEmpty else {
+                          completion(.failure(NSError(domain: "VideoResolver", code: 50)))
+                          return
+                      }
+                      let lock = NSLock()
+                      var resolved = false
+                      var fails = 0
+                      for ep in chosen {
+                          requestCobalt(ep, pageURL: pageURL) { result in
+                              lock.lock()
+                              let already = resolved
+                              if case .success = result { resolved = true }
+                              if case .failure = result { fails += 1 }
+                              let all = fails >= chosen.count
+                              lock.unlock()
+                              if already { return }
+                              switch result {
+                              case .success: completion(result)
+                              case .failure:
+                                  if all { completion(.failure(NSError(domain: "VideoResolver", code: 51))) }
+                              }
+                          }
+                      }
+                  }
+              }
+
+              private static func fetchInstanceList(completion: @escaping ([String]) -> Void) {
+                  if !cachedInstances.isEmpty, Date().timeIntervalSince(cacheTime) < 600 {
+                      completion(cachedInstances)
+                      return
+                  }
+                  guard let url = URL(string: directoryAPI) else {
+                      completion(cachedInstances)
+                      return
+                  }
+                  var req = URLRequest(url: url, timeoutInterval: 10)
+                  req.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+                  URLSession.shared.dataTask(with: req) { data, _, err in
+                      guard let data = data, err == nil,
+                            let j = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                          completion(cachedInstances)
+                          return
+                      }
+                      let root = j["data"] ?? j
+                      let list = parseInstanceList(root)
+                      if !list.isEmpty {
+                          cachedInstances = list
+                          cacheTime = Date()
+                      }
+                      completion(list.isEmpty ? cachedInstances : list)
+                  }.resume()
+              }
+
+              /// استخراج روابط السيرفرات من استجابة الـ directory بأي شكل JSON جاءت
+              private static func parseInstanceList(_ json: Any) -> [String] {
+                  var out: [String] = []
+                  func scan(_ value: Any, depth: Int) {
+                      guard depth < 6 else { return }
+                      if let dict = value as? [String: Any] {
+                          for key in ["apiUrl", "api_url", "apiURL", "api", "url", "instance", "host"] {
+                              if let s = dict[key] as? String, s.hasPrefix("https://") {
+                                  out.append(s.hasSuffix("/") ? s : s + "/")
+                                  return
+                              }
+                          }
+                          for v in dict.values { scan(v, depth: depth + 1) }
+                      } else if let arr = value as? [Any] {
+                          for v in arr { scan(v, depth: depth + 1) }
+                      }
+                  }
+                  scan(json, depth: 0)
+                  var seen = Set<String>()
+                  return out.filter { seen.insert($0).inserted }
               }
 
               // MARK: - تنظيف العناوين
