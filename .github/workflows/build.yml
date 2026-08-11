@@ -181,7 +181,7 @@ jobs:
                               }
                           }
                       }
-                      .navigationTitle("المكتبة (\(downloadManager.downloads.count)) — V11")
+                      .navigationTitle("المكتبة (\(downloadManager.downloads.count)) — V12")
                       .sheet(isPresented: $showPlayer) {
                           if let video = selectedVideo, let localURL = video.localURL {
                               VideoPlayerView(videoURL: localURL, videoTitle: video.proposedName.isEmpty ? video.url.lastPathComponent : video.proposedName)
@@ -1591,6 +1591,22 @@ jobs:
 
               static let mobileUA = MediaValidator.mobileUA
 
+              /// سجل تشخيصي: كل سيرفر اتجرب ونتيجته — بيظهر في تبويب الترجمة
+              static var lastTrials: [String] = []
+
+              private static func ok(_ r: Result<ResolvedVideo, Error>) -> Bool {
+                  if case .success = r { return true }
+                  return false
+              }
+
+              static func trial(_ label: String, _ ok: Bool) {
+                  let line = (ok ? "✅ " : "❌ ") + label
+                  if lastTrials.last != line {
+                      lastTrials.append(line)
+                      if lastTrials.count > 30 { lastTrials.removeFirst() }
+                  }
+              }
+
               // سيرفرات يوتيوب (نفس اللي في تطبيق الموسيقى بالظبط)
               private static let y2jarInfoURL = "https://v2.y2jar.cc/i/"
               private static let y2jarStreamTokenURL = "https://capi.y2jar.cc/st/a/"
@@ -1652,21 +1668,44 @@ jobs:
 
                   // 1) سيرفرات cobalt (فيديو كامل للمنصات عامة)
                   for endpoint in resolverEndpoints {
-                      register { done in requestCobalt(endpoint, pageURL: pageURL, completion: done) }
+                      let label = shortLabel(for: endpoint)
+                      register { done in
+                          requestCobalt(endpoint, pageURL: pageURL) { r in
+                              trial("cobalt:" + label, ok(r))
+                              done(r)
+                          }
+                      }
                   }
 
                   // 2) سيرفرات يوتيوب الأصلية من تطبيق الموسيقى + Piped بروابط googlevideo مباشرة
                   if let vid = extractYouTubeID(pageURL) {
-                      register { done in y2jarContender(vid: vid, completion: done) }
-                      register { done in cnvmp3Contender(vid: vid, completion: done) }
-                      register { done in workerContender(vid: vid, completion: done) }
-                      register { done in pipedContender(vid: vid, completion: done) }
-                      register { done in invidiousContender(vid: vid, completion: done) }
-                      register { done in ytDownloadAPIContender(vid: vid, completion: done) }
+                      register { done in
+                          y2jarContender(vid: vid) { r in trial("y2jar", ok(r)); done(r) }
+                      }
+                      register { done in
+                          cnvmp3Contender(vid: vid) { r in trial("cnvmp3", ok(r)); done(r) }
+                      }
+                      register { done in
+                          workerContender(vid: vid) { r in trial("worker", ok(r)); done(r) }
+                      }
+                      register { done in
+                          pipedContender(vid: vid) { r in trial("piped", ok(r)); done(r) }
+                      }
+                      register { done in
+                          invidiousContender(vid: vid) { r in trial("invidious", ok(r)); done(r) }
+                      }
+                      register { done in
+                          ytDownloadAPIContender(vid: vid) { r in trial("yt-api", ok(r)); done(r) }
+                      }
                   }
 
                   // 3) اكتشاف سيرفرات cobalt الشغّالة تلقائياً وقت التشغيل (cobalt.directory)
-                  register { done in discoverAndRaceCobalt(pageURL: pageURL, completion: done) }
+                  register { done in
+                      discoverAndRaceCobalt(pageURL: pageURL) { r in
+                          trial("cobalt-live", ok(r))
+                          done(r)
+                      }
+                  }
 
                   guard totalContenders > 0 else {
                       completion(.failure(NSError(domain: "VideoResolver", code: -1, userInfo: [NSLocalizedDescriptionKey: "لا توجد سيرفرات استخراج"])))
@@ -3374,9 +3413,23 @@ jobs:
                           }
 
                           Section {
-                              Text("إصدار محرك التحميل: V11 — لو مش شايف النص ده في التطبيق المثبت على جهازك، فأنت بتثبّت نسخة قديمة: انسخ build.yml الجديد للريبتو، شغّل الـ workflow من جديد، وامسح التطبيق القديم قبل التثبيت.")
+                              Text("إصدار محرك التحميل: V12 — لو مش شايف النص ده في التطبيق المثبت على جهازك، فأنت بتثبّت نسخة قديمة: انسخ build.yml الجديد للريبتو، شغّل الـ workflow من جديد، وامسح التطبيق القديم قبل التثبيت.")
                                   .font(.caption2)
                                   .foregroundColor(.secondary)
+                          }
+
+                          Section("سجل آخر محاولة استخراج (وريني سكرين شوت منه)") {
+                              if VideoResolver.lastTrials.isEmpty {
+                                  Text("لسه مفيش محاولات — جرّب تحميل فيديو من المتصفح وارجع هنا تاني")
+                                      .font(.caption2)
+                                      .foregroundColor(.secondary)
+                              } else {
+                                  ForEach(VideoResolver.lastTrials, id: \.self) { t in
+                                      Text(t)
+                                          .font(.caption2)
+                                          .foregroundColor(t.hasPrefix("✅") ? .green : .red)
+                                  }
+                              }
                           }
                       }
                       .navigationTitle("إعدادات الترجمة")
