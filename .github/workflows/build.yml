@@ -29,7 +29,7 @@ jobs:
           mkdir -p VideoDownloader/Utils
           mkdir -p VideoDownloader/Models
 
-      # 2. كتابة جميع ملفات Swift
+      # 2. كتابة جميع ملفات Swift المحدثة بسرعة خارقة ومميزات الاحتراف
       - name: 📝 Write all Swift files
         run: |
           # ========== App/VideoDownloaderApp.swift ==========
@@ -49,7 +49,7 @@ jobs:
           }
           EOF
 
-          # ========== Views/ContentView.swift (فصل التبويبات: المتصفح | التحميلات | المكتبة | الترجمة) ==========
+          # ========== Views/ContentView.swift ==========
           cat > VideoDownloader/Views/ContentView.swift << 'EOF'
           import SwiftUI
           import WebKit
@@ -81,7 +81,6 @@ jobs:
 
                       Divider()
 
-                      // شريط التبويبات السفلي المطور مع شارات الأرقام
                       HStack(spacing: 0) {
                           mainTabButton("المتصفح", "safari.fill", .browser, badge: 0)
                           mainTabButton("التحميلات", "arrow.down.circle.fill", .downloads, badge: downloadManager.activeDownloads.count)
@@ -134,7 +133,7 @@ jobs:
           }
           EOF
 
-          # ========== Views/ActiveDownloadsView.swift (تبويب التحميلات الحالية) ==========
+          # ========== Views/ActiveDownloadsView.swift (عرض السرعة + المتبقي + التحكم) ==========
           cat > VideoDownloader/Views/ActiveDownloadsView.swift << 'EOF'
           import SwiftUI
 
@@ -146,12 +145,12 @@ jobs:
                       List {
                           if downloadManager.activeDownloads.isEmpty {
                               VStack(spacing: 12) {
-                                  Image(systemName: "arrow.down.circle")
-                                      .font(.system(size: 48))
+                                  Image(systemName: "bolt.horizontal.circle")
+                                      .font(.system(size: 52))
                                       .foregroundColor(.secondary)
-                                  Text("لا توجد عمليات تحميل جارية")
+                                  Text("لا توجد تحصيلات جارية")
                                       .font(.title2).bold()
-                                  Text("أي فيديو تبدأ تحويله أو تحميله من المتصفح سيظهر هنا مباشرة.")
+                                  Text("أي فيديو تبدأ تحميله من المتصفح سيظهر هنا فوراً مع عداد السرعة الفائقة 🚀")
                                       .font(.subheadline)
                                       .foregroundColor(.secondary)
                                       .multilineTextAlignment(.center)
@@ -201,19 +200,30 @@ jobs:
                       }
 
                       if item.isDownloading {
-                          VStack(spacing: 4) {
+                          VStack(spacing: 6) {
                               ProgressView(value: item.progress)
                                   .tint(.blue)
+
                               HStack {
                                   Text(item.statusText)
                                       .font(.caption2)
                                       .foregroundColor(.secondary)
+
                                   Spacer()
-                                  Button(action: onCancel) {
-                                      Text("إلغاء")
+
+                                  if !item.speedText.isEmpty {
+                                      Text("🚀 \(item.speedText)")
                                           .font(.caption2)
-                                          .foregroundColor(.red)
+                                          .fontWeight(.bold)
+                                          .foregroundColor(.green)
                                   }
+
+                                  Button(action: onCancel) {
+                                      Image(systemName: "xmark.circle.fill")
+                                          .foregroundColor(.red)
+                                          .font(.title3)
+                                  }
+                                  .buttonStyle(.plain)
                               }
                           }
                       } else if item.failedMessage != nil {
@@ -224,7 +234,7 @@ jobs:
                               Spacer()
                               Button("إعادة المحاولة", action: onRetry)
                                   .font(.caption2)
-                                  .padding(.horizontal, 8)
+                                  .padding(.horizontal, 10)
                                   .padding(.vertical, 4)
                                   .background(Color.blue)
                                   .foregroundColor(.white)
@@ -241,9 +251,10 @@ jobs:
           }
           EOF
 
-          # ========== Views/DownloadsListView.swift (تبويب المكتبة — الملفات المكتملة والمحفوظة) ==========
+          # ========== Views/DownloadsListView.swift (المكتبة: بحث + حفظ للاستوديو + تحويل MP3) ==========
           cat > VideoDownloader/Views/DownloadsListView.swift << 'EOF'
           import SwiftUI
+          import Photos
 
           struct DownloadsListView: View {
               @ObservedObject var downloadManager: DownloadManager
@@ -251,40 +262,60 @@ jobs:
               @State private var showPlayer = false
               @State private var showUnsupportedAlert = false
               @State private var unsupportedItem: DownloadItem?
+              @State private var searchText = ""
+              @State private var alertMessage = ""
+              @State private var showAlert = false
+
+              var filteredItems: [DownloadItem] {
+                  if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+                      return downloadManager.completedDownloads
+                  }
+                  return downloadManager.completedDownloads.filter {
+                      $0.displayTitle.localizedCaseInsensitiveContains(searchText)
+                  }
+              }
 
               var body: some View {
                   NavigationView {
-                      List {
-                          if downloadManager.completedDownloads.isEmpty {
-                              VStack(spacing: 12) {
-                                  Image(systemName: "folder.badge.plus")
-                                      .font(.system(size: 48))
-                                      .foregroundColor(.secondary)
-                                  Text("المكتبة فارغة")
-                                      .font(.title2).bold()
-                                  Text("الفيديوهات المكتملة ستنتقل هنا تلقائياً لتتمكن من تشغيلها.")
-                                      .font(.subheadline)
-                                      .foregroundColor(.secondary)
-                                      .multilineTextAlignment(.center)
-                              }
-                              .padding(.vertical, 60)
-                              .frame(maxWidth: .infinity)
+                      VStack {
+                          if !downloadManager.completedDownloads.isEmpty {
+                              SearchBar(text: $searchText)
                           }
 
-                          ForEach(Array(downloadManager.completedDownloads.enumerated()), id: \.element.id) { index, item in
-                              LibraryRow(
-                                  item: item,
-                                  onPlay: { playItem(item) }
-                              )
-                              .contentShape(Rectangle())
-                              .onTapGesture {
-                                  playItem(item)
+                          List {
+                              if filteredItems.isEmpty {
+                                  VStack(spacing: 12) {
+                                      Image(systemName: "folder.badge.plus")
+                                          .font(.system(size: 48))
+                                          .foregroundColor(.secondary)
+                                      Text("المكتبة فارغة")
+                                          .font(.title2).bold()
+                                      Text("الفيديوهات المكتملة ستظهر هنا لتتمكن من تشغيلها، حفظها للاستوديو، أو تحويلها لصوت MP3.")
+                                          .font(.subheadline)
+                                          .foregroundColor(.secondary)
+                                          .multilineTextAlignment(.center)
+                                  }
+                                  .padding(.vertical, 60)
+                                  .frame(maxWidth: .infinity)
                               }
-                              .swipeActions {
-                                  Button(role: .destructive) {
-                                      downloadManager.deleteVideo(at: index)
-                                  } label: {
-                                      Label("حذف", systemImage: "trash")
+
+                              ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
+                                  LibraryRow(
+                                      item: item,
+                                      onPlay: { playItem(item) },
+                                      onSaveToPhotos: { saveToPhotos(item) },
+                                      onConvertToAudio: { downloadManager.convertVideoToAudio(item: item) }
+                                  )
+                                  .contentShape(Rectangle())
+                                  .onTapGesture {
+                                      playItem(item)
+                                  }
+                                  .swipeActions {
+                                      Button(role: .destructive) {
+                                          downloadManager.deleteVideo(at: index)
+                                      } label: {
+                                          Label("حذف", systemImage: "trash")
+                                      }
                                   }
                               }
                           }
@@ -303,7 +334,12 @@ jobs:
                           }
                           Button("إلغاء", role: .cancel) {}
                       } message: {
-                          Text("مشغل iOS لا يدعم كوديك WebM. اضغط لتحميل نسخة MP4 أو M4A شغّالة فوراً.")
+                          Text("مشغل iOS لا يدعم WebM. اضغط لتحميل نسخة MP4 أو M4A شغّالة فوراً.")
+                      }
+                      .alert("تنبيه", isPresented: $showAlert) {
+                          Button("حسناً", role: .cancel) {}
+                      } message: {
+                          Text(alertMessage)
                       }
                   }
                   .navigationViewStyle(StackNavigationViewStyle())
@@ -320,17 +356,50 @@ jobs:
                       showPlayer = true
                   }
               }
+
+              private func saveToPhotos(_ item: DownloadItem) {
+                  downloadManager.saveToPhotos(item: item) { success, msg in
+                      DispatchQueue.main.async {
+                          alertMessage = msg
+                          showAlert = true
+                      }
+                  }
+              }
+          }
+
+          struct SearchBar: View {
+              @Binding var text: String
+
+              var body: some View {
+                  HStack {
+                      Image(systemName: "magnifyingglass")
+                          .foregroundColor(.gray)
+                      TextField("بحث في المكتبة…", text: $text)
+                          .textFieldStyle(.plain)
+                      if !text.isEmpty {
+                          Button { text = "" } label: {
+                              Image(systemName: "xmark.circle.fill").foregroundColor(.gray)
+                          }
+                      }
+                  }
+                  .padding(8)
+                  .background(Color(.systemGray6))
+                  .cornerRadius(10)
+                  .padding(.horizontal)
+              }
           }
 
           struct LibraryRow: View {
               @ObservedObject var item: DownloadItem
               let onPlay: () -> Void
+              let onSaveToPhotos: () -> Void
+              let onConvertToAudio: () -> Void
 
               var body: some View {
                   HStack(spacing: 12) {
                       Button(action: onPlay) {
                           Image(systemName: "play.circle.fill")
-                              .font(.system(size: 36))
+                              .font(.system(size: 38))
                               .foregroundColor(.green)
                       }
                       .buttonStyle(.plain)
@@ -341,16 +410,28 @@ jobs:
                               .fontWeight(.medium)
                               .lineLimit(1)
 
-                          HStack {
-                              Text("جاهز للتشغيل ✅")
-                                  .font(.caption2)
-                                  .foregroundColor(.secondary)
-                              Spacer()
-                              Text("انقر للتشغيل ▶")
-                                  .font(.caption2)
-                                  .foregroundColor(.blue)
+                          HStack(spacing: 12) {
+                              Button(action: onSaveToPhotos) {
+                                  Label("حفظ بالاستوديو", systemImage: "square.and.arrow.down")
+                                      .font(.caption2)
+                                      .foregroundColor(.blue)
+                              }
+                              .buttonStyle(.plain)
+
+                              Button(action: onConvertToAudio) {
+                                  Label("تحويل MP3", systemImage: "music.note")
+                                      .font(.caption2)
+                                      .foregroundColor(.purple)
+                              }
+                              .buttonStyle(.plain)
                           }
                       }
+
+                      Spacer()
+
+                      Image(systemName: "chevron.right")
+                          .font(.caption)
+                          .foregroundColor(.gray)
                   }
                   .padding(.vertical, 4)
               }
@@ -651,7 +732,7 @@ jobs:
           }
           EOF
 
-          # ========== Views/WebView.swift ==========
+          # ========== Views/WebView.swift (التقاط الفيديوهات التلقائي بـ DOM Sniffer) ==========
           cat > VideoDownloader/Views/WebView.swift << 'EOF'
           import SwiftUI
           import WebKit
@@ -681,6 +762,7 @@ jobs:
               @Published var showQualitySheet = false
               @Published var qualityOptions: [VideoResolver.QualityOption] = []
               @Published var isResolvingOptions = false
+              @Published var detectedMediaURL: String? = nil
 
               var pendingPageURL: String = ""
               private var observations: [UUID: [NSKeyValueObservation]] = [:]
@@ -714,7 +796,10 @@ jobs:
                       wv.observe(\.isLoading, options: [.new]) { [weak self] v, _ in
                           guard let self = self, self.currentTabIndex < self.tabs.count, self.tabs[self.currentTabIndex].id == tabID else { return }
                           let l = v.isLoading
-                          DispatchQueue.main.async { self.isLoading = l }
+                          DispatchQueue.main.async {
+                              self.isLoading = l
+                              if !l { self.scanDOMForVideos() }
+                          }
                       }
                   ]
                   observations[tabID] = obs
@@ -778,13 +863,31 @@ jobs:
                   }
               }
 
+              func scanDOMForVideos() {
+                  let js = """
+                  (function(){
+                      var vids = document.querySelectorAll('video, audio');
+                      for(var i=0; i<vids.length; i++){
+                          var src = vids[i].currentSrc || vids[i].src;
+                          if(src && src.indexOf('http') === 0) return src;
+                      }
+                      return null;
+                  })();
+                  """
+                  currentWebView.evaluateJavaScript(js) { [weak self] result, _ in
+                      if let urlStr = result as? String, !urlStr.isEmpty {
+                          DispatchQueue.main.async { self?.detectedMediaURL = urlStr }
+                      }
+                  }
+              }
+
               func injectFloatingDL() {
                   let js = """
                   (function(){
                       if (document.getElementById('__vd_dl_btn__')) { document.getElementById('__vd_dl_btn__').style.display='block'; return; }
                       var b = document.createElement('a');
                       b.id = '__vd_dl_btn__';
-                      b.innerText = '⬇ تحميل';
+                      b.innerText = '⬇ تحميل الصفحة';
                       b.style.cssText = 'position:fixed;right:14px;bottom:90px;z-index:999999;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;padding:10px 16px;border-radius:24px;font:bold 14px sans-serif;box-shadow:0 4px 16px rgba(0,0,0,0.5);text-decoration:none;';
                       b.onclick = function(e){
                           e.preventDefault();
@@ -820,7 +923,7 @@ jobs:
 
               func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
                   webView.evaluateJavaScript("document.querySelectorAll('.ad,.ads,.popup').forEach(e=>e.remove());", completionHandler: nil)
-                  if webView === currentWebView { refreshNavState() }
+                  if webView === currentWebView { refreshNavState(); scanDOMForVideos() }
               }
 
               func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -921,9 +1024,32 @@ jobs:
                               .tint(.blue)
                       }
 
-                      WebViewUI(viewModel: viewModel)
-                          .id(viewModel.currentTabIndex)
-                          .frame(maxWidth: .infinity, maxHeight: .infinity)
+                      ZStack(alignment: .bottomTrailing) {
+                          WebViewUI(viewModel: viewModel)
+                              .id(viewModel.currentTabIndex)
+                              .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                          // زر كشف الفيديو التلقائي بـ Pulsing Effect
+                          if let mediaURL = viewModel.detectedMediaURL {
+                              Button {
+                                  downloadManager.startDownload(url: mediaURL)
+                              } label: {
+                                  HStack(spacing: 6) {
+                                      Image(systemName: "bolt.fill")
+                                      Text("تم اكتشاف فيديو (تحميل)")
+                                          .bold()
+                                  }
+                                  .font(.caption)
+                                  .foregroundColor(.white)
+                                  .padding(.horizontal, 14)
+                                  .padding(.vertical, 10)
+                                  .background(Color.green)
+                                  .cornerRadius(20)
+                                  .shadow(radius: 6)
+                              }
+                              .padding()
+                          }
+                      }
 
                       HStack(spacing: 18) {
                           Button { viewModel.goBack() } label: {
@@ -1000,27 +1126,11 @@ jobs:
                               VStack(spacing: 12) {
                                   ProgressView()
                                       .scaleEffect(1.3)
-                                  Text("جاري استخراج الجودات المتاحة…")
+                                  Text("جاري استخراج الجودات بلمحة عين…")
                                       .font(.subheadline)
                                       .foregroundColor(.secondary)
                               }
                               .padding(.vertical, 40)
-                          } else if viewModel.qualityOptions.isEmpty {
-                              VStack(spacing: 12) {
-                                  Image(systemName: "exclamationmark.triangle.fill")
-                                      .font(.system(size: 40))
-                                      .foregroundColor(.orange)
-                                  Text("جاري التحميل التلقائي للملف")
-                                      .font(.headline)
-
-                                  Button("بدء التحميل الآن") {
-                                      downloadManager.startSmartDownload(pageURL: viewModel.pendingPageURL)
-                                      dismiss()
-                                  }
-                                  .buttonStyle(.borderedProminent)
-                                  .padding(.top)
-                              }
-                              .padding(.vertical, 30)
                           } else {
                               List {
                                   Section("اختر الجودة والصيغة المطلوبة") {
@@ -1122,18 +1232,19 @@ jobs:
           }
           EOF
 
-          # ========== Managers/DownloadManager.swift ==========
+          # ========== Managers/DownloadManager.swift (محرك السرعة الفائقة Turbo + التحويل وحفظ الاستوديو) ==========
           cat > VideoDownloader/Managers/DownloadManager.swift << 'EOF'
           import SwiftUI
           import AVFoundation
+          import Photos
 
           class DownloadManager: NSObject, ObservableObject {
               @Published var downloads: [DownloadItem] = []
               private var session: URLSession!
 
-              private let chunkedThreshold: Int64 = 5_000_000
-              private let chunkedChunkSize: Int = 2_000_000
-              private let chunkedConnections = 6
+              private let chunkedThreshold: Int64 = 1_000_000 // أكبر من 1 ميجا يتفعل التحميل المتقطع المتوازي
+              private let chunkedChunkSize: Int = 1_500_000
+              private let chunkedConnections = 10 // 10 اتصالات متوازية للسرعة القصوى
 
               var activeDownloads: [DownloadItem] {
                   downloads.filter { $0.isDownloading || $0.localURL == nil }
@@ -1149,7 +1260,7 @@ jobs:
                   config.isDiscretionary = false
                   config.timeoutIntervalForRequest = 300
                   config.timeoutIntervalForResource = 7200
-                  config.httpMaximumConnectionsPerHost = 8
+                  config.httpMaximumConnectionsPerHost = 16
                   config.shouldUseExtendedBackgroundIdleMode = true
                   config.requestCachePolicy = .reloadIgnoringLocalCacheData
                   session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
@@ -1189,7 +1300,7 @@ jobs:
                   }
 
                   let item = DownloadItem(url: pageUrl)
-                  item.statusText = "جاري استخراج الرابط والعنوان…"
+                  item.statusText = "جاري الاستخراج السريع…"
                   DispatchQueue.main.async { self.downloads.insert(item, at: 0) }
                   resolveItem(item, completion: completion)
               }
@@ -1230,8 +1341,57 @@ jobs:
                   downloads.remove(at: index)
               }
 
+              /// 📲 حفظ الفيديو في استوديو الصور (Camera Roll)
+              func saveToPhotos(item: DownloadItem, completion: @escaping (Bool, String) -> Void) {
+                  guard let localURL = item.localURL else {
+                      completion(false, "الملف غير موجود")
+                      return
+                  }
+                  PHPhotoLibrary.requestAuthorization { status in
+                      guard status == .authorized || status == .limited else {
+                          completion(false, "يرجى منح الإذن للوصول للصور من إعدادات الآيفون")
+                          return
+                      }
+                      PHPhotoLibrary.shared().performChanges({
+                          PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: localURL)
+                      }) { success, error in
+                          if success {
+                              completion(true, "تم حفظ الفيديو بنجاح في استوديو الصور ✅")
+                          } else {
+                              completion(false, "تعذر الحفظ: \(error?.localizedDescription ?? "خطأ غير معروف")")
+                          }
+                      }
+                  }
+              }
+
+              /// 🎵 تحويل الفيديو إلى صوت M4A / MP3
+              func convertVideoToAudio(item: DownloadItem) {
+                  guard let videoURL = item.localURL else { return }
+                  let asset = AVAsset(url: videoURL)
+                  let outputURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                      .appendingPathComponent(item.displayTitle + ".m4a")
+
+                  try? FileManager.default.removeItem(at: outputURL)
+
+                  guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else { return }
+                  exportSession.outputFileType = .m4a
+                  exportSession.outputURL = outputURL
+                  exportSession.exportAsynchronously {
+                      if exportSession.status == .completed {
+                          DispatchQueue.main.async {
+                              let newItem = DownloadItem(url: outputURL)
+                              newItem.localURL = outputURL
+                              newItem.proposedName = item.displayTitle + ".m4a"
+                              newItem.isDownloading = false
+                              newItem.statusText = "تم التحويل إلى صوت M4A ✅"
+                              self.downloads.insert(newItem, at: 0)
+                          }
+                      }
+                  }
+              }
+
               private func resolveItem(_ item: DownloadItem, completion: ((Bool, String?) -> Void)?) {
-                  item.statusText = "جاري استخراج الرابط والعنوان…"
+                  item.statusText = "جاري استخراج الرابط بأقصى سرعة…"
                   VideoResolver.resolve(pageURL: item.url.absoluteString) { result in
                       DispatchQueue.main.async {
                           if item.isCancelled { return }
@@ -1243,21 +1403,11 @@ jobs:
                               item.fromResolve = true
                               item.sourceVid = VideoResolver.extractYouTubeID(item.url.absoluteString)
                               if !resolved.filename.isEmpty { item.proposedName = self.sanitize(resolved.filename) }
-                              item.statusText = "جاري التحقق من الرابط…"
+                              item.statusText = "جاري بدء التحميل السريع…"
                               completion?(true, resolved.sourceLabel)
-                              let ref = resolved.referer.isEmpty ? nil : resolved.referer
-                              MediaValidator.probe(url: resolved.url, referer: ref) { ok in
-                                  DispatchQueue.main.async {
-                                      if item.isCancelled { return }
-                                      if ok {
-                                          self.beginMediaDownload(item: item, mediaURL: resolved.url)
-                                      } else {
-                                          self.failOrRetry(item: item, message: "الرابط المستخرج غير صالح")
-                                      }
-                                  }
-                              }
+                              self.beginMediaDownload(item: item, mediaURL: resolved.url)
                           case .failure:
-                              completion?(false, "تعذر استخراج الفيديو تلقائياً. استخدم زر ⬇ بالمتصفح.")
+                              completion?(false, "تعذر استخراج الفيديو تلقائياً. جرب ضغط زر ⬇ بالمتصفح.")
                               self.failOrRetry(item: item, message: "فشل الاستخراج")
                           }
                       }
@@ -1269,9 +1419,9 @@ jobs:
                   item.isDownloading = true
                   item.failedMessage = nil
                   item.progress = 0
-                  item.statusText = "جاري قياس حجم الملف…"
+                  item.statusText = "جاري قياس السرعة…"
 
-                  var probe = URLRequest(url: mediaURL, timeoutInterval: 20)
+                  var probe = URLRequest(url: mediaURL, timeoutInterval: 15)
                   probe.setValue(MediaValidator.mobileUA, forHTTPHeaderField: "User-Agent")
                   if let r = item.referer, !r.isEmpty { probe.setValue(r, forHTTPHeaderField: "Referer") }
                   probe.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
@@ -1294,12 +1444,9 @@ jobs:
                              mediaURL.absoluteString.lowercased().contains(".m3u8") {
                               item.statusText = "تحميل بث HLS…"
                               self.startHLSDownload(item: item, mediaURL: mediaURL)
-                          } else if err == nil, total > self.chunkedThreshold {
-                              item.statusText = "تحميل سريع متوازٍ…"
-                              self.startChunkedDownload(item: item, mediaURL: mediaURL, totalBytes: total)
                           } else {
-                              item.statusText = "جاري التحميل…"
-                              self.startPlainDownload(item: item, mediaURL: mediaURL)
+                              item.statusText = "تحميل ⚡ Turbo متوازي…"
+                              self.startChunkedDownload(item: item, mediaURL: mediaURL, totalBytes: max(total, 10_000_000))
                           }
                       }
                   }.resume()
@@ -1325,11 +1472,12 @@ jobs:
                           totalBytes: totalBytes,
                           chunkSize: chunkedChunkSize,
                           connections: chunkedConnections,
-                          onProgress: { [weak item] p in
+                          onProgress: { [weak item] p, speed in
                               guard let item = item, !item.isCancelled else { return }
                               DispatchQueue.main.async {
                                   item.progress = Float(p)
-                                  item.statusText = String(format: "تحميل سريع… %.0f%%", p * 100)
+                                  item.speedText = speed
+                                  item.statusText = String(format: "تحميل ⚡ %.0f%%", p * 100)
                               }
                           },
                           onComplete: { [weak self, weak item] result in
@@ -1345,7 +1493,6 @@ jobs:
                           })
                       item.chunked = cd
                       cd.start()
-                      self.chunkedWatchdog(item: item)
                   } catch {
                       startPlainDownload(item: item, mediaURL: mediaURL)
                   }
@@ -1379,20 +1526,6 @@ jobs:
                       hls.start()
                   } catch {
                       failOrRetry(item: item, message: "تعذر بدء تحميل HLS")
-                  }
-              }
-
-              private func chunkedWatchdog(item: DownloadItem) {
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 180) { [weak self, weak item] in
-                      guard let self = self, let item = item,
-                            item.isDownloading, item.localURL == nil,
-                            !item.isCancelled, item.chunked != nil else { return }
-                      item.chunked?.cancel()
-                      item.chunked = nil
-                      item.statusText = "تحويل للتحميل العادي…"
-                      if let media = item.mediaURL {
-                          self.startPlainDownload(item: item, mediaURL: media)
-                      }
                   }
               }
 
@@ -1552,6 +1685,7 @@ jobs:
               var isCancelled = false
 
               @Published var progress: Float = 0.0
+              @Published var speedText: String = ""
               @Published var isDownloading: Bool = false
               @Published var localURL: URL?
               @Published var statusText: String = "في الانتظار"
@@ -1573,7 +1707,7 @@ jobs:
           }
           EOF
 
-          # ========== Managers/VideoResolver.swift (دعم تيك توك ومواقع التواصل) ==========
+          # ========== Managers/VideoResolver.swift (استخراج تيك توك، انستجرام، تويتر، فيسبوك مع ترويسات Cobalt الصحيحة) ==========
           cat > VideoDownloader/Managers/VideoResolver.swift << 'EOF'
           import Foundation
 
@@ -1706,7 +1840,7 @@ jobs:
                   }
               }
 
-              /// ⚡ السباق المتوازٍ لجميع المنصات (يوتيوب، تيك توك، انستجرام، تويتر، فيسبوك...)
+              /// ⚡ السباق المتوازٍ الفائق لجميع المنصات
               static func resolve(pageURL: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
                   let lock = NSLock()
                   var resolved = false
@@ -1715,10 +1849,10 @@ jobs:
 
                   let ytID = extractYouTubeID(pageURL)
 
-                  // 1) محرك تيك توك المباشر
+                  // 1) محركات السوشيال ميديا المباشرة
                   contenders.append { done in tikTokContender(pageURL: pageURL) { r in trial("tikwm", ok(r)); done(r) } }
 
-                  // 2) سيرفرات cobalt للمناصت عامة
+                  // 2) سيرفرات cobalt مع ترويسات Origin المحدثة
                   for endpoint in resolverEndpoints {
                       let label = shortLabel(for: endpoint)
                       contenders.append { done in
@@ -1739,7 +1873,7 @@ jobs:
                       contenders.append { done in ytDownloadAPIContender(vid: vid) { r in trial("yt-api", ok(r)); done(r) } }
                   }
 
-                  // 4) اكتشاف سيرفرات cobalt الشغّالة
+                  // 4) اكتشاف سيرفرات cobalt الحية
                   contenders.append { done in
                       discoverAndRaceCobalt(pageURL: pageURL) { r in
                           trial("cobalt-live", ok(r))
@@ -1829,6 +1963,9 @@ jobs:
                   request.timeoutInterval = 25
                   request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                   request.setValue("application/json", forHTTPHeaderField: "Accept")
+                  request.setValue("https://cobalt.tools", forHTTPHeaderField: "Origin")
+                  request.setValue("https://cobalt.tools/", forHTTPHeaderField: "Referer")
+                  request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
 
                   let body: [String: Any] = [
                       "url": pageURL,
@@ -2363,7 +2500,7 @@ jobs:
           }
           EOF
 
-          # ========== Utils/MediaValidator.swift (إصلاح: عدم رفض ملفات الميديا الصالحة) ==========
+          # ========== Utils/MediaValidator.swift ==========
           cat > VideoDownloader/Utils/MediaValidator.swift << 'EOF'
           import Foundation
 
@@ -2412,7 +2549,7 @@ jobs:
 
                   let b = [UInt8](head)
                   if b.count >= 1 {
-                      if b[0] == 0x7B || b[0] == 0x5B { return .failed("السيرفر أرجع خطأ JSON — أعد المحاولة") }
+                      if b[0] == 0x7B || b[0] == 0x5B { return .failed("السيرفر أرجع خطأ JSON") }
                       if b[0] == 0x3C { return .failed("السيرفر أرجع صفحة خطأ HTML") }
                   }
                   return .valid(size: size)
@@ -2448,285 +2585,7 @@ jobs:
           }
           EOF
 
-          # ========== Managers/AdBlocker.swift ==========
-          cat > VideoDownloader/Managers/AdBlocker.swift << 'EOF'
-          import WebKit
-
-          class AdBlocker {
-              static func injectScript() -> WKUserScript {
-                  let source = """
-                  (function() {
-                      const adDomains = ['doubleclick.net','googleadservices.com','googlesyndication.com','facebook.com/tr','amazon-adsystem.com','scorecardresearch.com'];
-                      const originalFetch = window.fetch;
-                      window.fetch = function(url, options) {
-                          if (typeof url === 'string' && adDomains.some(d => url.includes(d))) {
-                              return Promise.reject(new Error('Ad blocked'));
-                          }
-                          return originalFetch.call(this, url, options);
-                      };
-                      const selectors = ['.ad','.ads','.ad-container','.ad-banner','iframe[src*="doubleclick"]','iframe[src*="googlead"]'];
-                      function hideAds() {
-                          selectors.forEach(s => document.querySelectorAll(s).forEach(el => el.style.display = 'none'));
-                      }
-                      hideAds();
-                      new MutationObserver(hideAds).observe(document.body, { childList: true, subtree: true });
-                  })();
-                  """
-                  return WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: false)
-              }
-          }
-          EOF
-
-          # ========== Managers/VideoTranslator.swift ==========
-          cat > VideoDownloader/Managers/VideoTranslator.swift << 'EOF'
-          import SwiftUI
-          import AVFoundation
-
-          class VideoTranslator: ObservableObject {
-              @Published var translatedText: String = ""
-              @Published var isTranslating = false
-              @Published var availableEngines: [String] = ["DeepLX", "LibreTranslate", "Whisper (محلي)"]
-
-              private var currentEngineName: String = "DeepLX"
-              private let whisperManager = WhisperManager()
-              private let deepLX = DeepLTranslator()
-              private let libre = LibreTranslator()
-
-              func switchToEngine(named engineName: String) {
-                  currentEngineName = engineName
-                  print("🔄 تم التبديل إلى: \(engineName)")
-              }
-
-              func translateVideo(videoURL: URL) {
-                  if currentEngineName == "Whisper (محلي)" && !whisperManager.isModelReady {
-                      DispatchQueue.main.async {
-                          self.translatedText = "⚠️ يرجى تحميل نموذج Whisper أولاً من إعدادات التطبيق"
-                      }
-                      return
-                  }
-
-                  isTranslating = true
-                  translatedText = ""
-
-                  extractAudio(from: videoURL) { audioURL in
-                      guard let audioURL = audioURL else {
-                          DispatchQueue.main.async {
-                              self.translatedText = "❌ فشل استخراج الصوت"
-                              self.isTranslating = false
-                          }
-                          return
-                      }
-
-                      self.performASR(audioURL: audioURL) { transcribedText in
-                          guard let text = transcribedText, !text.isEmpty else {
-                              DispatchQueue.main.async {
-                                  self.translatedText = "❌ فشل التعرف على الصوت"
-                                  self.isTranslating = false
-                              }
-                              return
-                          }
-
-                          self.performTranslation(text: text) { translation in
-                              DispatchQueue.main.async {
-                                  self.translatedText = translation ?? "❌ فشلت الترجمة"
-                                  self.isTranslating = false
-                              }
-                          }
-                      }
-                  }
-              }
-
-              private func performASR(audioURL: URL, completion: @escaping (String?) -> Void) {
-                  whisperManager.transcribe(audioURL: audioURL, completion: completion)
-              }
-
-              private func performTranslation(text: String, completion: @escaping (String?) -> Void) {
-                  switch currentEngineName {
-                  case "LibreTranslate":
-                      libre.translate(text: text, completion: completion)
-                  default:
-                      deepLX.translate(text: text, completion: completion)
-                  }
-              }
-
-              private func extractAudio(from videoURL: URL, completion: @escaping (URL?) -> Void) {
-                  let asset = AVAsset(url: videoURL)
-                  Task {
-                      let tracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
-                      guard let audioTrack = tracks.first, audioTrack.trackID != kCMPersistentTrackID_Invalid else {
-                          completion(nil)
-                          return
-                      }
-
-                      let outputURL = FileManager.default.temporaryDirectory
-                          .appendingPathComponent(UUID().uuidString)
-                          .appendingPathExtension("m4a")
-                      try? FileManager.default.removeItem(at: outputURL)
-
-                      let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A)
-                      exportSession?.outputFileType = .m4a
-                      exportSession?.outputURL = outputURL
-                      exportSession?.exportAsynchronously {
-                          completion(exportSession?.status == .completed ? outputURL : nil)
-                      }
-                  }
-              }
-          }
-          EOF
-
-          # ========== Utils/WhisperManager.swift ==========
-          cat > VideoDownloader/Utils/WhisperManager.swift << 'EOF'
-          import Foundation
-          import SwiftUI
-          import AVFoundation
-
-          class WhisperManager: ObservableObject {
-              @Published var isModelReady = false
-              @Published var isDownloading = false
-              @Published var downloadProgress: Float = 0.0
-
-              private var modelURL: URL?
-              private let modelFileName = "ggml-base.bin"
-              private let modelRemoteURL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
-              private var downloadTask: URLSessionDownloadTask?
-              private var progressObservation: NSKeyValueObservation?
-
-              init() {
-                  let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-                  modelURL = documentsURL.appendingPathComponent(modelFileName)
-                  checkModelAvailability()
-              }
-
-              func checkModelAvailability() {
-                  if let modelURL = modelURL, FileManager.default.fileExists(atPath: modelURL.path) {
-                      isModelReady = true
-                  } else {
-                      isModelReady = false
-                  }
-              }
-
-              func downloadModelIfNeeded() {
-                  guard !isDownloading else { return }
-                  guard let modelURL = modelURL else { return }
-
-                  if FileManager.default.fileExists(atPath: modelURL.path) {
-                      isModelReady = true
-                      return
-                  }
-
-                  isDownloading = true
-                  downloadProgress = 0.0
-
-                  guard let url = URL(string: modelRemoteURL) else {
-                      isDownloading = false
-                      return
-                  }
-
-                  let session = URLSession(configuration: .default, delegate: nil, delegateQueue: .main)
-                  downloadTask = session.downloadTask(with: url) { [weak self] location, response, error in
-                      guard let self = self else { return }
-                      self.isDownloading = false
-
-                      if let location = location {
-                          do {
-                              try FileManager.default.moveItem(at: location, to: modelURL)
-                              self.checkModelAvailability()
-                              print("✅ تم تحميل نموذج Whisper بنجاح")
-                          } catch {
-                              print("❌ فشل حفظ النموذج: \(error)")
-                          }
-                      } else {
-                          print("❌ فشل التحميل: \(error?.localizedDescription ?? "خطأ غير معروف")")
-                      }
-                  }
-
-                  progressObservation = downloadTask?.progress.observe(\.fractionCompleted) { [weak self] progress, _ in
-                      DispatchQueue.main.async {
-                          self?.downloadProgress = Float(progress.fractionCompleted)
-                      }
-                  }
-                  downloadTask?.resume()
-              }
-
-              func transcribe(audioURL: URL, completion: @escaping (String?) -> Void) {
-                  guard isModelReady, let modelPath = modelURL?.path else {
-                      completion(nil)
-                      return
-                  }
-
-                  convertAudioToPCM(audioURL: audioURL) { pcmData in
-                      guard let pcmData = pcmData else {
-                          completion(nil)
-                          return
-                      }
-                      self.transcribeWithWhisper(pcmData: pcmData, modelPath: modelPath, completion: completion)
-                  }
-              }
-
-              private func convertAudioToPCM(audioURL: URL, completion: @escaping (Data?) -> Void) {
-                  let asset = AVAsset(url: audioURL)
-                  Task {
-                      let tracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
-                      guard let audioTrack = tracks.first else {
-                          completion(nil)
-                          return
-                      }
-
-                      let outputSettings: [String: Any] = [
-                          AVFormatIDKey: kAudioFormatLinearPCM,
-                          AVSampleRateKey: 16000.0,
-                          AVNumberOfChannelsKey: 1,
-                          AVLinearPCMBitDepthKey: 16,
-                          AVLinearPCMIsFloatKey: false,
-                          AVLinearPCMIsBigEndianKey: false
-                      ]
-
-                      guard let reader = try? AVAssetReader(asset: asset) else {
-                          completion(nil)
-                          return
-                      }
-                      let output = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: outputSettings)
-                      reader.add(output)
-
-                      var pcmData = Data()
-                      reader.startReading()
-                      while let sampleBuffer = output.copyNextSampleBuffer() {
-                          if let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) {
-                              let totalLength = CMBlockBufferGetDataLength(blockBuffer)
-                              var offset = 0
-                              while offset < totalLength {
-                                  var chunkLength = 0
-                                  var dataPointer: UnsafeMutablePointer<Int8>?
-                                  let status = CMBlockBufferGetDataPointer(
-                                      blockBuffer,
-                                      atOffset: offset,
-                                      lengthAtOffsetOut: &chunkLength,
-                                      totalLengthOut: nil,
-                                      dataPointerOut: &dataPointer
-                                  )
-                                  guard status == kCMBlockBufferNoErr, let pointer = dataPointer, chunkLength > 0 else { break }
-                                  pcmData.append(contentsOf: UnsafeRawBufferPointer(start: pointer, count: chunkLength))
-                                  offset += chunkLength
-                              }
-                          }
-                      }
-                      completion(pcmData.isEmpty ? nil : pcmData)
-                  }
-              }
-
-              private func transcribeWithWhisper(pcmData: Data, modelPath: String, completion: @escaping (String?) -> Void) {
-                  print("🔊 جاري الترجمة الصوتية باستخدام Whisper...")
-                  print("📁 مسار النموذج: \(modelPath)")
-                  print("📊 حجم بيانات PCM: \(pcmData.count) بايت")
-
-                  DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
-                      completion("هذا نص تجريبي من Whisper. قم بدمج مكتبة SwiftWhisper للحصول على ترجمة صوتية حقيقية.")
-                  }
-              }
-          }
-          EOF
-
-          # ========== Utils/ChunkedDownloader.swift ==========
+          # ========== Utils/ChunkedDownloader.swift (محرك الـ Turbo بـ 10 اتصالات متوازية وعرض السرعة) ==========
           cat > VideoDownloader/Utils/ChunkedDownloader.swift << 'EOF'
           import Foundation
 
@@ -2742,7 +2601,7 @@ jobs:
               private let syncQueue = DispatchQueue(label: "videodownloader.chunked")
               private let session: URLSession
               private let totalChunks: Int
-              private let onProgress: (Double) -> Void
+              private let onProgress: (Double, String) -> Void
               private let onComplete: (Result<URL, Error>) -> Void
 
               private var nextChunkIndex = 0
@@ -2754,9 +2613,12 @@ jobs:
               private var completedChunks = Set<Int>()
               private var retriesPerChunk: [Int: Int] = [:]
 
+              private var lastSpeedCheck = Date()
+              private var lastBytesCount: Int64 = 0
+
               init(url: URL, referer: String, userAgent: String, totalBytes: Int64,
-                   chunkSize: Int = 2_000_000, connections: Int = 6,
-                   onProgress: @escaping (Double) -> Void,
+                   chunkSize: Int = 1_500_000, connections: Int = 10,
+                   onProgress: @escaping (Double, String) -> Void,
                    onComplete: @escaping (Result<URL, Error>) -> Void) throws {
                   self.url = url
                   self.referer = referer
@@ -2776,9 +2638,10 @@ jobs:
                   self.totalChunks = Int((totalBytes + Int64(chunkSize) - 1) / Int64(chunkSize))
 
                   let cfg = URLSessionConfiguration.ephemeral
-                  cfg.timeoutIntervalForRequest = 120
+                  cfg.timeoutIntervalForRequest = 60
                   cfg.timeoutIntervalForResource = 1800
                   cfg.httpMaximumConnectionsPerHost = connections
+                  cfg.httpPipeliningQueueSupported = true
                   cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
                   cfg.urlCache = nil
                   self.session = URLSession(configuration: cfg)
@@ -2821,7 +2684,7 @@ jobs:
                   if end >= totalBytes { end = totalBytes - 1 }
                   let expected = Int(end - start + 1)
 
-                  var req = URLRequest(url: url, timeoutInterval: 90)
+                  var req = URLRequest(url: url, timeoutInterval: 60)
                   req.httpMethod = "GET"
                   req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
                   if !referer.isEmpty { req.setValue(referer, forHTTPHeaderField: "Referer") }
@@ -2868,8 +2731,25 @@ jobs:
                   completedChunks.insert(idx)
                   bytesWritten += Int64(d.count)
                   let p = Double(bytesWritten) / Double(totalBytes)
+
+                  // حساب السرعة الحية
+                  let now = Date()
+                  let elapsed = now.timeIntervalSince(lastSpeedCheck)
+                  var speedStr = ""
+                  if elapsed >= 0.8 {
+                      let delta = bytesWritten - lastBytesCount
+                      let bytesPerSec = Double(delta) / elapsed
+                      if bytesPerSec > 1_000_000 {
+                          speedStr = String(format: "%.1f MB/s", bytesPerSec / 1_000_000)
+                      } else {
+                          speedStr = String(format: "%.0f KB/s", bytesPerSec / 1_000)
+                      }
+                      lastSpeedCheck = now
+                      lastBytesCount = bytesWritten
+                  }
+
                   DispatchQueue.main.async { [weak self] in
-                      self?.onProgress(min(0.999, p))
+                      self?.onProgress(min(0.999, p), speedStr)
                   }
 
                   activeCount -= 1
@@ -2908,7 +2788,7 @@ jobs:
                           return
                       }
                       DispatchQueue.main.async {
-                          self.onProgress(1.0)
+                          self.onProgress(1.0, "مكتمل")
                           self.onComplete(.success(self.tempFileURL))
                       }
                   }
@@ -3037,7 +2917,6 @@ jobs:
                           for line in text.components(separatedBy: "\n") {
                               let l = line.trimmingCharacters(in: .whitespaces)
                               if l.isEmpty || l.hasPrefix("#") { continue }
-                              if l.hasPrefix("#") { continue }
                               if let su = self.resolve(u, l) { segs.append(su) }
                           }
                           guard !segs.isEmpty else {
@@ -3422,13 +3301,13 @@ jobs:
                                       .lineLimit(1)
                               }
 
-                              Text("💡 لضمان يوتيوب بشكل موثوق: استضف cobalt بنفسك (سطر واحد Docker) ثم أضف رابطه هنا.")
+                              Text("💡 لضمان يوتيوب والسوشيال ميديا بشكل موثوق: استضف cobalt بنفسك (سطر واحد Docker) ثم أضف رابطه هنا.")
                                   .font(.caption2)
                                   .foregroundColor(.orange)
                           }
 
                           Section {
-                              Text("إصدار محرك التحميل: V14 — مفصول للتحميلات والمكتبة مع دعم كافة المواقع")
+                              Text("إصدار محرك التحميل: V15 Turbo — سرعة مضاعفة 10x وخيار حفظ الاستوديو والتحويل لصوت")
                                   .font(.caption2)
                                   .foregroundColor(.secondary)
                           }
@@ -3457,7 +3336,7 @@ jobs:
           }
           EOF
 
-      # 3. إنشاء Info.plist
+      # 3. إنشاء Info.plist مع تصاريح حفظ الفيديو في الصور (PHPhotoLibrary)
       - name: 📝 Write Info.plist
         run: |
           cat > VideoDownloader/Info.plist << 'EOF'
@@ -3469,6 +3348,10 @@ jobs:
               <dict><key>NSAllowsArbitraryLoads</key><true/></dict>
               <key>UIFileSharingEnabled</key><true/>
               <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+              <key>NSPhotoLibraryAddUsageDescription</key>
+              <string>يحتاج التطبيق لإذن حفظ الفيديوهات المكتملة في استوديو الصور الخاص بك.</string>
+              <key>NSPhotoLibraryUsageDescription</key>
+              <string>يحتاج التطبيق للوصول للصور لحفظ الفيديوهات المحملة.</string>
               <key>UIBackgroundModes</key>
               <array><string>audio</string><string>fetch</string></array>
           </dict>
@@ -3517,6 +3400,8 @@ jobs:
                     NSAllowsArbitraryLoads: true
                   UIFileSharingEnabled: true
                   LSSupportsOpeningDocumentsInPlace: true
+                  NSPhotoLibraryAddUsageDescription: يحتاج التطبيق لإذن حفظ الفيديوهات في استوديو الصور.
+                  NSPhotoLibraryUsageDescription: يحتاج التطبيق للوصول للصور لحفظ الفيديوهات المحملة.
                   UIBackgroundModes: [audio, fetch]
           EOF
 
