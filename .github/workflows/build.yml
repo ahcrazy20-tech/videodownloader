@@ -49,12 +49,12 @@ jobs:
           }
           EOF
 
-          # ========== Views/ContentView.swift ==========
+          # ========== Views/ContentView.swift (فصل التبويبات: المتصفح | التحميلات | المكتبة | الترجمة) ==========
           cat > VideoDownloader/Views/ContentView.swift << 'EOF'
           import SwiftUI
           import WebKit
 
-          enum TabID: Hashable { case browser, library, settings }
+          enum TabID: Hashable { case browser, downloads, library, settings }
 
           struct ContentView: View {
               @StateObject private var downloadManager = DownloadManager()
@@ -69,6 +69,8 @@ jobs:
                           switch selected {
                           case .browser:
                               BrowserView(viewModel: webViewModel, urlString: $urlString, downloadManager: downloadManager)
+                          case .downloads:
+                              ActiveDownloadsView(downloadManager: downloadManager)
                           case .library:
                               DownloadsListView(downloadManager: downloadManager)
                           case .settings:
@@ -79,11 +81,12 @@ jobs:
 
                       Divider()
 
-                      // شريط التبويبات السفلي
+                      // شريط التبويبات السفلي المطور مع شارات الأرقام
                       HStack(spacing: 0) {
-                          mainTabButton("المتصفح", "safari.fill", .browser)
-                          mainTabButton("المكتبة", "square.stack.fill", .library)
-                          mainTabButton("الترجمة", "character.bubble", .settings)
+                          mainTabButton("المتصفح", "safari.fill", .browser, badge: 0)
+                          mainTabButton("التحميلات", "arrow.down.circle.fill", .downloads, badge: downloadManager.activeDownloads.count)
+                          mainTabButton("المكتبة", "square.stack.fill", .library, badge: downloadManager.completedDownloads.count)
+                          mainTabButton("الترجمة", "character.bubble", .settings, badge: 0)
                       }
                       .padding(.top, 6)
                       .padding(.bottom, 4)
@@ -96,13 +99,25 @@ jobs:
                   }
               }
 
-              private func mainTabButton(_ label: String, _ icon: String, _ id: TabID) -> some View {
+              private func mainTabButton(_ label: String, _ icon: String, _ id: TabID, badge: Int) -> some View {
                   Button {
                       selected = id
                       UIImpactFeedbackGenerator(style: .light).impactOccurred()
                   } label: {
                       VStack(spacing: 3) {
-                          Image(systemName: icon).font(.system(size: 20))
+                          ZStack(alignment: .topTrailing) {
+                              Image(systemName: icon).font(.system(size: 20))
+                              if badge > 0 {
+                                  Text("\(badge)")
+                                      .font(.system(size: 10, weight: .bold))
+                                      .foregroundColor(.white)
+                                      .padding(.horizontal, 4)
+                                      .padding(.vertical, 1)
+                                      .background(Color.red)
+                                      .clipShape(Capsule())
+                                      .offset(x: 10, y: -6)
+                              }
+                          }
                           Text(label).font(.caption2)
                       }
                       .foregroundColor(selected == id ? .blue : .secondary)
@@ -119,29 +134,24 @@ jobs:
           }
           EOF
 
-          # ========== Views/DownloadsListView.swift ==========
-          cat > VideoDownloader/Views/DownloadsListView.swift << 'EOF'
+          # ========== Views/ActiveDownloadsView.swift (تبويب التحميلات الحالية) ==========
+          cat > VideoDownloader/Views/ActiveDownloadsView.swift << 'EOF'
           import SwiftUI
 
-          struct DownloadsListView: View {
+          struct ActiveDownloadsView: View {
               @ObservedObject var downloadManager: DownloadManager
-              @State private var selectedVideo: DownloadItem?
-              @State private var showPlayer = false
-              @State private var showCorruptAlert = false
-              @State private var showUnsupportedAlert = false
-              @State private var unsupportedItem: DownloadItem?
 
               var body: some View {
                   NavigationView {
                       List {
-                          if downloadManager.downloads.isEmpty {
+                          if downloadManager.activeDownloads.isEmpty {
                               VStack(spacing: 12) {
-                                  Image(systemName: "square.and.arrow.down")
+                                  Image(systemName: "arrow.down.circle")
                                       .font(.system(size: 48))
                                       .foregroundColor(.secondary)
-                                  Text("مكتبتك فاضية")
+                                  Text("لا توجد عمليات تحميل جارية")
                                       .font(.title2).bold()
-                                  Text("حمّل فيديوهات من تبويب المتصفح أو الصق رابط بالزر ⬇")
+                                  Text("أي فيديو تبدأ تحويله أو تحميله من المتصفح سيظهر هنا مباشرة.")
                                       .font(.subheadline)
                                       .foregroundColor(.secondary)
                                       .multilineTextAlignment(.center)
@@ -150,11 +160,120 @@ jobs:
                               .frame(maxWidth: .infinity)
                           }
 
-                          ForEach(Array(downloadManager.downloads.enumerated()), id: \.element.id) { index, item in
-                              DownloadRow(
+                          ForEach(downloadManager.activeDownloads) { item in
+                              ActiveDownloadRow(
                                   item: item,
                                   onCancel: { downloadManager.cancelDownload(item) },
-                                  onRetry: { downloadManager.retryDownload(item) },
+                                  onRetry: { downloadManager.retryDownload(item) }
+                              )
+                          }
+                      }
+                      .navigationTitle("التحميلات (\(downloadManager.activeDownloads.count))")
+                  }
+                  .navigationViewStyle(StackNavigationViewStyle())
+              }
+          }
+
+          struct ActiveDownloadRow: View {
+              @ObservedObject var item: DownloadItem
+              let onCancel: () -> Void
+              let onRetry: () -> Void
+
+              var body: some View {
+                  VStack(alignment: .leading, spacing: 8) {
+                      HStack {
+                          Image(systemName: "arrow.down.circle.fill")
+                              .foregroundColor(.blue)
+                              .font(.title2)
+                          Text(item.displayTitle)
+                              .font(.headline)
+                              .lineLimit(1)
+                          Spacer()
+                          if !item.backendLabel.isEmpty {
+                              Text(item.backendLabel)
+                                  .font(.system(size: 9, weight: .black))
+                                  .padding(.horizontal, 6)
+                                  .padding(.vertical, 2)
+                                  .background(Color.blue.opacity(0.15))
+                                  .foregroundColor(.blue)
+                                  .cornerRadius(4)
+                          }
+                      }
+
+                      if item.isDownloading {
+                          VStack(spacing: 4) {
+                              ProgressView(value: item.progress)
+                                  .tint(.blue)
+                              HStack {
+                                  Text(item.statusText)
+                                      .font(.caption2)
+                                      .foregroundColor(.secondary)
+                                  Spacer()
+                                  Button(action: onCancel) {
+                                      Text("إلغاء")
+                                          .font(.caption2)
+                                          .foregroundColor(.red)
+                                  }
+                              }
+                          }
+                      } else if item.failedMessage != nil {
+                          HStack {
+                              Text(item.statusText)
+                                  .font(.caption2)
+                                  .foregroundColor(.red)
+                              Spacer()
+                              Button("إعادة المحاولة", action: onRetry)
+                                  .font(.caption2)
+                                  .padding(.horizontal, 8)
+                                  .padding(.vertical, 4)
+                                  .background(Color.blue)
+                                  .foregroundColor(.white)
+                                  .cornerRadius(6)
+                          }
+                      } else {
+                          Text(item.statusText)
+                              .font(.caption2)
+                              .foregroundColor(.secondary)
+                      }
+                  }
+                  .padding(.vertical, 4)
+              }
+          }
+          EOF
+
+          # ========== Views/DownloadsListView.swift (تبويب المكتبة — الملفات المكتملة والمحفوظة) ==========
+          cat > VideoDownloader/Views/DownloadsListView.swift << 'EOF'
+          import SwiftUI
+
+          struct DownloadsListView: View {
+              @ObservedObject var downloadManager: DownloadManager
+              @State private var selectedVideo: DownloadItem?
+              @State private var showPlayer = false
+              @State private var showUnsupportedAlert = false
+              @State private var unsupportedItem: DownloadItem?
+
+              var body: some View {
+                  NavigationView {
+                      List {
+                          if downloadManager.completedDownloads.isEmpty {
+                              VStack(spacing: 12) {
+                                  Image(systemName: "folder.badge.plus")
+                                      .font(.system(size: 48))
+                                      .foregroundColor(.secondary)
+                                  Text("المكتبة فارغة")
+                                      .font(.title2).bold()
+                                  Text("الفيديوهات المكتملة ستنتقل هنا تلقائياً لتتمكن من تشغيلها.")
+                                      .font(.subheadline)
+                                      .foregroundColor(.secondary)
+                                      .multilineTextAlignment(.center)
+                              }
+                              .padding(.vertical, 60)
+                              .frame(maxWidth: .infinity)
+                          }
+
+                          ForEach(Array(downloadManager.completedDownloads.enumerated()), id: \.element.id) { index, item in
+                              LibraryRow(
+                                  item: item,
                                   onPlay: { playItem(item) }
                               )
                               .contentShape(Rectangle())
@@ -170,21 +289,11 @@ jobs:
                               }
                           }
                       }
-                      .navigationTitle("المكتبة (\(downloadManager.downloads.count))")
+                      .navigationTitle("المكتبة (\(downloadManager.completedDownloads.count))")
                       .sheet(isPresented: $showPlayer) {
                           if let video = selectedVideo, let localURL = video.localURL {
                               VideoPlayerView(videoURL: localURL, videoTitle: video.displayTitle)
                           }
-                      }
-                      .alert("ملف غير صالح أو تالف", isPresented: $showCorruptAlert) {
-                          Button("إعادة التحميل باستخراج جديد") {
-                              if let item = selectedVideo {
-                                  downloadManager.retryDownload(item)
-                              }
-                          }
-                          Button("حسناً", role: .cancel) {}
-                      } message: {
-                          Text("الملف ده غير صالح للتشغيل — اضغط إعادة المحاولة لاستخراجه بسيرفر مختلف.")
                       }
                       .alert("صيغة غير مدعومة (WebM)", isPresented: $showUnsupportedAlert) {
                           Button("تحميل نسخة MP4 / M4A شغّالة") {
@@ -194,111 +303,52 @@ jobs:
                           }
                           Button("إلغاء", role: .cancel) {}
                       } message: {
-                          Text("مشغل مش كوديك WebM. اضغط لتحميل نسخة MP4 أو M4A شغّالة فوراً على الآيفون.")
+                          Text("مشغل iOS لا يدعم كوديك WebM. اضغط لتحميل نسخة MP4 أو M4A شغّالة فوراً.")
                       }
                   }
                   .navigationViewStyle(StackNavigationViewStyle())
               }
 
               private func playItem(_ item: DownloadItem) {
-                  if item.isDownloading { return }
-                  guard let url = item.localURL else {
-                      if item.failedMessage != nil { downloadManager.retryDownload(item) }
-                      return
-                  }
+                  guard let url = item.localURL else { return }
                   let ext = url.pathExtension.lowercased()
                   if ext == "webm" || ext == "mkv" {
                       unsupportedItem = item
                       showUnsupportedAlert = true
-                  } else if case .valid = MediaValidator.validateFile(at: url) {
-                      selectedVideo = item
-                      showPlayer = true
                   } else {
                       selectedVideo = item
-                      showCorruptAlert = true
+                      showPlayer = true
                   }
               }
           }
 
-          struct DownloadRow: View {
+          struct LibraryRow: View {
               @ObservedObject var item: DownloadItem
-              let onCancel: () -> Void
-              let onRetry: () -> Void
               let onPlay: () -> Void
-
-              private var icon: (name: String, color: Color) {
-                  if item.isDownloading { return ("arrow.down.circle.fill", .blue) }
-                  if item.localURL != nil { return ("play.circle.fill", .green) }
-                  if item.failedMessage != nil { return ("exclamationmark.triangle.fill", .red) }
-                  return ("clock.fill", .secondary)
-              }
 
               var body: some View {
                   HStack(spacing: 12) {
-                      // زر التشغيل/الأيقونة
                       Button(action: onPlay) {
-                          Image(systemName: icon.name)
-                              .font(.system(size: 32))
-                              .foregroundColor(icon.color)
+                          Image(systemName: "play.circle.fill")
+                              .font(.system(size: 36))
+                              .foregroundColor(.green)
                       }
                       .buttonStyle(.plain)
 
                       VStack(alignment: .leading, spacing: 4) {
-                          HStack {
-                              Text(item.displayTitle)
-                                  .font(.body)
-                                  .fontWeight(.medium)
-                                  .lineLimit(1)
-                              Spacer()
-                              if !item.backendLabel.isEmpty {
-                                  Text(item.backendLabel)
-                                      .font(.system(size: 9, weight: .black))
-                                      .padding(.horizontal, 6)
-                                      .padding(.vertical, 2)
-                                      .background(Color.blue.opacity(0.15))
-                                      .foregroundColor(.blue)
-                                      .cornerRadius(4)
-                              }
-                          }
+                          Text(item.displayTitle)
+                              .font(.body)
+                              .fontWeight(.medium)
+                              .lineLimit(1)
 
-                          if item.isDownloading {
-                              HStack(spacing: 8) {
-                                  ProgressView(value: item.progress)
-                                  Text(String(format: "%.0f%%", item.progress * 100))
-                                      .font(.caption2)
-                                      .foregroundColor(.secondary)
-                                  Button(action: onCancel) {
-                                      Image(systemName: "xmark.circle.fill")
-                                          .foregroundColor(.red)
-                                  }
-                                  .buttonStyle(.plain)
-                              }
-                          } else if item.failedMessage != nil {
-                              HStack(spacing: 8) {
-                                  Text(item.statusText)
-                                      .font(.caption2)
-                                      .foregroundColor(.red)
-                                      .lineLimit(1)
-                                  Spacer()
-                                  Button("إعادة المحاولة", action: onRetry)
-                                      .font(.caption2)
-                                      .padding(.horizontal, 8)
-                                      .padding(.vertical, 3)
-                                      .background(Color.blue)
-                                      .foregroundColor(.white)
-                                      .cornerRadius(5)
-                              }
-                          } else {
-                              HStack {
-                                  Text(item.statusText)
-                                      .font(.caption2)
-                                      .foregroundColor(.secondary)
-                                      .lineLimit(1)
-                                  Spacer()
-                                  Text("اضغط للتشغيل ▶")
-                                      .font(.caption2)
-                                      .foregroundColor(.blue)
-                              }
+                          HStack {
+                              Text("جاهز للتشغيل ✅")
+                                  .font(.caption2)
+                                  .foregroundColor(.secondary)
+                              Spacer()
+                              Text("انقر للتشغيل ▶")
+                                  .font(.caption2)
+                                  .foregroundColor(.blue)
                           }
                       }
                   }
@@ -601,7 +651,7 @@ jobs:
           }
           EOF
 
-          # ========== Views/WebView.swift (إضافة نافذة اختيار الجودة والصيغة) ==========
+          # ========== Views/WebView.swift ==========
           cat > VideoDownloader/Views/WebView.swift << 'EOF'
           import SwiftUI
           import WebKit
@@ -633,7 +683,6 @@ jobs:
               @Published var isResolvingOptions = false
 
               var pendingPageURL: String = ""
-              var pendingSuggestedTitle: String = ""
               private var observations: [UUID: [NSKeyValueObservation]] = [:]
 
               override init() {
@@ -961,13 +1010,10 @@ jobs:
                                   Image(systemName: "exclamationmark.triangle.fill")
                                       .font(.system(size: 40))
                                       .foregroundColor(.orange)
-                                  Text("لم نتمكن من جلب خيارات الجودة")
+                                  Text("جاري التحميل التلقائي للملف")
                                       .font(.headline)
-                                  Text("اضغط تحميل مباشر لبدء الاستخراج التلقائي")
-                                      .font(.caption)
-                                      .foregroundColor(.secondary)
 
-                                  Button("تحميل تلقائي") {
+                                  Button("بدء التحميل الآن") {
                                       downloadManager.startSmartDownload(pageURL: viewModel.pendingPageURL)
                                       dismiss()
                                   }
@@ -1089,6 +1135,14 @@ jobs:
               private let chunkedChunkSize: Int = 2_000_000
               private let chunkedConnections = 6
 
+              var activeDownloads: [DownloadItem] {
+                  downloads.filter { $0.isDownloading || $0.localURL == nil }
+              }
+
+              var completedDownloads: [DownloadItem] {
+                  downloads.filter { !$0.isDownloading && $0.localURL != nil }
+              }
+
               override init() {
                   super.init()
                   let config = URLSessionConfiguration.background(withIdentifier: "com.yourapp.download")
@@ -1167,6 +1221,7 @@ jobs:
               }
 
               func deleteVideo(at index: Int) {
+                  guard index < downloads.count else { return }
                   let item = downloads[index]
                   cancelDownload(item)
                   if let localURL = item.localURL {
@@ -1405,6 +1460,7 @@ jobs:
                   item.localURL = destPath
                   item.progress = 1.0
                   item.isDownloading = false
+                  item.failedMessage = nil
                   let ext = destPath.pathExtension.lowercased()
                   if ext == "webm" || ext == "mkv" {
                       item.statusText = "تم التحميل ⚠️ WebM — اضغط للتحويل لـ MP4"
@@ -1517,7 +1573,7 @@ jobs:
           }
           EOF
 
-          # ========== Managers/VideoResolver.swift (تحسين العناوين وتوفير خيارات الجودة) ==========
+          # ========== Managers/VideoResolver.swift (دعم تيك توك ومواقع التواصل) ==========
           cat > VideoDownloader/Managers/VideoResolver.swift << 'EOF'
           import Foundation
 
@@ -1611,7 +1667,6 @@ jobs:
                   return nil
               }
 
-              /// جلب عنوان فيديو يوتيوب عبر oEmbed
               static func fetchYouTubeTitle(vid: String, completion: @escaping (String) -> Void) {
                   let oembedStr = "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=\(vid)&format=json"
                   guard let u = URL(string: oembedStr) else {
@@ -1632,11 +1687,10 @@ jobs:
                   }.resume()
               }
 
-              /// استخراج خيارات الجودات للنافذة
               static func resolveQualityOptions(pageURL: String, completion: @escaping ([QualityOption]) -> Void) {
                   if let vid = extractYouTubeID(pageURL) {
                       fetchYouTubeTitle(vid: vid) { title in
-                          var opts: [QualityOption] = [
+                          let opts: [QualityOption] = [
                               QualityOption(title: title + ".mp4", label: "جودة عالية (1080p MP4)", quality: "1080p", format: "mp4", url: nil),
                               QualityOption(title: title + ".mp4", label: "جودة متوسطة (720p MP4)", quality: "720p", format: "mp4", url: nil),
                               QualityOption(title: title + ".m4a", label: "نسخة صوتية (M4A عالية)", quality: "Audio", format: "m4a", url: nil),
@@ -1652,7 +1706,7 @@ jobs:
                   }
               }
 
-              /// ⚡ السباق المتوازٍ بين كافة السيرفرات
+              /// ⚡ السباق المتوازٍ لجميع المنصات (يوتيوب، تيك توك، انستجرام، تويتر، فيسبوك...)
               static func resolve(pageURL: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
                   let lock = NSLock()
                   var resolved = false
@@ -1661,7 +1715,10 @@ jobs:
 
                   let ytID = extractYouTubeID(pageURL)
 
-                  // 1) سيرفرات cobalt
+                  // 1) محرك تيك توك المباشر
+                  contenders.append { done in tikTokContender(pageURL: pageURL) { r in trial("tikwm", ok(r)); done(r) } }
+
+                  // 2) سيرفرات cobalt للمناصت عامة
                   for endpoint in resolverEndpoints {
                       let label = shortLabel(for: endpoint)
                       contenders.append { done in
@@ -1672,7 +1729,7 @@ jobs:
                       }
                   }
 
-                  // 2) سيرفرات يوتيوب الأصلية
+                  // 3) سيرفرات يوتيوب الأصلية
                   if let vid = ytID {
                       contenders.append { done in y2jarContender(vid: vid) { r in trial("y2jar", ok(r)); done(r) } }
                       contenders.append { done in cnvmp3Contender(vid: vid) { r in trial("cnvmp3", ok(r)); done(r) } }
@@ -1682,7 +1739,7 @@ jobs:
                       contenders.append { done in ytDownloadAPIContender(vid: vid) { r in trial("yt-api", ok(r)); done(r) } }
                   }
 
-                  // 3) اكتشاف سيرفرات cobalt الشغّالة
+                  // 4) اكتشاف سيرفرات cobalt الشغّالة
                   contenders.append { done in
                       discoverAndRaceCobalt(pageURL: pageURL) { r in
                           trial("cobalt-live", ok(r))
@@ -1725,6 +1782,34 @@ jobs:
                           }
                       }
                   }
+              }
+
+              // محرك تيك توك المباشر
+              static func tikTokContender(pageURL: String, completion: @escaping (Result<ResolvedVideo, Error>) -> Void) {
+                  guard pageURL.lowercased().contains("tiktok.com") else {
+                      completion(.failure(NSError(domain: "VideoResolver", code: 80)))
+                      return
+                  }
+                  let enc = pageURL.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? pageURL
+                  guard let u = URL(string: "https://www.tikwm.com/api/?url=" + enc) else {
+                      completion(.failure(NSError(domain: "VideoResolver", code: 80)))
+                      return
+                  }
+                  var req = URLRequest(url: u, timeoutInterval: 12)
+                  req.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+
+                  URLSession.shared.dataTask(with: req) { data, _, err in
+                      guard let data = data, err == nil,
+                            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                            let dataDict = json["data"] as? [String: Any],
+                            let playURLStr = (dataDict["play"] as? String) ?? (dataDict["wmplay"] as? String),
+                            let playURL = URL(string: playURLStr) else {
+                          completion(.failure(NSError(domain: "VideoResolver", code: 81)))
+                          return
+                      }
+                      let title = cleanTitle(dataDict["title"] as? String ?? "TikTok Video")
+                      completion(.success(ResolvedVideo(url: playURL, filename: title + ".mp4", sourceLabel: "TikWM⚡", referer: "")))
+                  }.resume()
               }
 
               private static func shortLabel(for endpoint: String) -> String {
@@ -2278,6 +2363,91 @@ jobs:
           }
           EOF
 
+          # ========== Utils/MediaValidator.swift (إصلاح: عدم رفض ملفات الميديا الصالحة) ==========
+          cat > VideoDownloader/Utils/MediaValidator.swift << 'EOF'
+          import Foundation
+
+          class MediaValidator {
+              static let mobileUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+
+              enum ValidationResult {
+                  case valid(size: Int64)
+                  case failed(String)
+              }
+
+              static func probe(url: URL, referer: String? = nil, completion: @escaping (Bool) -> Void) {
+                  var req = URLRequest(url: url, timeoutInterval: 10)
+                  req.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
+                  if let referer = referer { req.setValue(referer, forHTTPHeaderField: "Referer") }
+                  req.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
+
+                  URLSession.shared.dataTask(with: req) { data, resp, err in
+                      if err != nil { completion(false); return }
+                      guard let hr = resp as? HTTPURLResponse,
+                            hr.statusCode >= 200, hr.statusCode < 300 else {
+                          completion(false)
+                          return
+                      }
+                      let ct = (hr.mimeType ?? "").lowercased()
+                      if ct.contains("html") || ct.contains("json") || ct.contains("text") {
+                          if let d = data, looksLikeMedia(d) { completion(true) } else { completion(false) }
+                          return
+                      }
+                      completion(true)
+                  }.resume()
+              }
+
+              static func validateFile(at url: URL) -> ValidationResult {
+                  let fm = FileManager.default
+                  guard let attrs = try? fm.attributesOfItem(atPath: url.path),
+                        let size = attrs[.size] as? Int64, size > 1_000 else {
+                      return .failed("الملف صغير جداً (تالف)")
+                  }
+                  let head: Data = {
+                      guard let fh = FileHandle(forReadingAtPath: url.path) else { return Data() }
+                      defer { try? fh.close() }
+                      return fh.readData(ofLength: 512)
+                  }()
+                  guard !head.isEmpty else { return .failed("تعذر قراءة الملف") }
+
+                  let b = [UInt8](head)
+                  if b.count >= 1 {
+                      if b[0] == 0x7B || b[0] == 0x5B { return .failed("السيرفر أرجع خطأ JSON — أعد المحاولة") }
+                      if b[0] == 0x3C { return .failed("السيرفر أرجع صفحة خطأ HTML") }
+                  }
+                  return .valid(size: size)
+              }
+
+              static func containerExtension(at url: URL) -> String? {
+                  guard let fh = FileHandle(forReadingAtPath: url.path) else { return nil }
+                  defer { try? fh.close() }
+                  let b = [UInt8](fh.readData(ofLength: 12))
+                  guard b.count >= 4 else { return nil }
+                  if b.count >= 8, b[4] == 0x66, b[5] == 0x74, b[6] == 0x79, b[7] == 0x70 { return "mp4" }
+                  if b[0] == 0x1A, b[1] == 0x45, b[2] == 0xDF, b[3] == 0xA3 { return "webm" }
+                  if b[0] == 0x52, b[1] == 0x49, b[2] == 0x46, b[3] == 0x46 { return "avi" }
+                  if b[0] == 0x47 { return "ts" }
+                  if b[0] == 0x49, b[1] == 0x44, b[2] == 0x33 { return "mp3" }
+                  if b[0] == 0xFF, (b[1] & 0xE0) == 0xE0 { return "mp3" }
+                  return nil
+              }
+
+              static func looksLikeMedia(_ data: Data) -> Bool {
+                  let b = [UInt8](data)
+                  guard b.count >= 4 else { return false }
+                  if b.count >= 8, b[4] == 0x66, b[5] == 0x74, b[6] == 0x79, b[7] == 0x70 { return true }
+                  if b[0] == 0x1A, b[1] == 0x45, b[2] == 0xDF, b[3] == 0xA3 { return true }
+                  if b[0] == 0x52, b[1] == 0x49, b[2] == 0x46, b[3] == 0x46 { return true }
+                  if b[0] == 0x49, b[1] == 0x44, b[2] == 0x33 { return true }
+                  if b[0] == 0xFF, (b[1] & 0xE0) == 0xE0 { return true }
+                  if b[0] == 0x4F, b[1] == 0x67, b[2] == 0x67, b[3] == 0x53 { return true }
+                  if b[0] == 0x66, b[1] == 0x4C, b[2] == 0x61, b[3] == 0x43 { return true }
+                  if b[0] == 0x47 { return true }
+                  return false
+              }
+          }
+          EOF
+
           # ========== Managers/AdBlocker.swift ==========
           cat > VideoDownloader/Managers/AdBlocker.swift << 'EOF'
           import WebKit
@@ -2552,90 +2722,6 @@ jobs:
                   DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
                       completion("هذا نص تجريبي من Whisper. قم بدمج مكتبة SwiftWhisper للحصول على ترجمة صوتية حقيقية.")
                   }
-              }
-          }
-          EOF
-
-          # ========== Utils/MediaValidator.swift ==========
-          cat > VideoDownloader/Utils/MediaValidator.swift << 'EOF'
-          import Foundation
-
-          class MediaValidator {
-              static let mobileUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-
-              enum ValidationResult {
-                  case valid(size: Int64)
-                  case failed(String)
-              }
-
-              static func probe(url: URL, referer: String? = nil, completion: @escaping (Bool) -> Void) {
-                  var req = URLRequest(url: url, timeoutInterval: 10)
-                  req.setValue(mobileUA, forHTTPHeaderField: "User-Agent")
-                  if let referer = referer { req.setValue(referer, forHTTPHeaderField: "Referer") }
-                  req.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
-
-                  URLSession.shared.dataTask(with: req) { data, resp, err in
-                      if err != nil { completion(false); return }
-                      guard let hr = resp as? HTTPURLResponse,
-                            hr.statusCode >= 200, hr.statusCode < 300 else {
-                          completion(false)
-                          return
-                      }
-                      let ct = (hr.mimeType ?? "").lowercased()
-                      if ct.contains("html") || ct.contains("json") || ct.contains("text") {
-                          if let d = data, looksLikeMedia(d) { completion(true) } else { completion(false) }
-                          return
-                      }
-                      completion(true)
-                  }.resume()
-              }
-
-              static func validateFile(at url: URL) -> ValidationResult {
-                  let fm = FileManager.default
-                  guard let attrs = try? fm.attributesOfItem(atPath: url.path),
-                        let size = attrs[.size] as? Int64, size > 1_000 else {
-                      return .failed("الملف صغير جداً (تالف)")
-                  }
-                  let head: Data = {
-                      guard let fh = FileHandle(forReadingAtPath: url.path) else { return Data() }
-                      defer { try? fh.close() }
-                      return fh.readData(ofLength: 12)
-                  }()
-                  guard !head.isEmpty else { return .failed("تعذر قراءة الملف") }
-
-                  let b = [UInt8](head)
-                  if b[0] == 0x7B { return .failed("السيرفر أرجع خطأ JSON — أعد المحاولة") }
-                  if b[0] == 0x3C { return .failed("السيرفر أرجع صفحة خطأ HTML") }
-                  if looksLikeMedia(head) { return .valid(size: size) }
-                  return .failed("الملف ليس وسائط صالحة")
-              }
-
-              static func containerExtension(at url: URL) -> String? {
-                  guard let fh = FileHandle(forReadingAtPath: url.path) else { return nil }
-                  defer { try? fh.close() }
-                  let b = [UInt8](fh.readData(ofLength: 12))
-                  guard b.count >= 4 else { return nil }
-                  if b.count >= 8, b[4] == 0x66, b[5] == 0x74, b[6] == 0x79, b[7] == 0x70 { return "mp4" }
-                  if b[0] == 0x1A, b[1] == 0x45, b[2] == 0xDF, b[3] == 0xA3 { return "webm" }
-                  if b[0] == 0x52, b[1] == 0x49, b[2] == 0x46, b[3] == 0x46 { return "avi" }
-                  if b[0] == 0x47 { return "ts" }
-                  if b[0] == 0x49, b[1] == 0x44, b[2] == 0x33 { return "mp3" }
-                  if b[0] == 0xFF, (b[1] & 0xE0) == 0xE0 { return "mp3" }
-                  return nil
-              }
-
-              static func looksLikeMedia(_ data: Data) -> Bool {
-                  let b = [UInt8](data)
-                  guard b.count >= 4 else { return false }
-                  if b.count >= 8, b[4] == 0x66, b[5] == 0x74, b[6] == 0x79, b[7] == 0x70 { return true }
-                  if b[0] == 0x1A, b[1] == 0x45, b[2] == 0xDF, b[3] == 0xA3 { return true }
-                  if b[0] == 0x52, b[1] == 0x49, b[2] == 0x46, b[3] == 0x46 { return true }
-                  if b[0] == 0x49, b[1] == 0x44, b[2] == 0x33 { return true }
-                  if b[0] == 0xFF, (b[1] & 0xE0) == 0xE0 { return true }
-                  if b[0] == 0x4F, b[1] == 0x67, b[2] == 0x67, b[3] == 0x53 { return true }
-                  if b[0] == 0x66, b[1] == 0x4C, b[2] == 0x61, b[3] == 0x43 { return true }
-                  if b[0] == 0x47 { return true }
-                  return false
               }
           }
           EOF
@@ -2951,6 +3037,7 @@ jobs:
                           for line in text.components(separatedBy: "\n") {
                               let l = line.trimmingCharacters(in: .whitespaces)
                               if l.isEmpty || l.hasPrefix("#") { continue }
+                              if l.hasPrefix("#") { continue }
                               if let su = self.resolve(u, l) { segs.append(su) }
                           }
                           guard !segs.isEmpty else {
@@ -3341,7 +3428,7 @@ jobs:
                           }
 
                           Section {
-                              Text("إصدار محرك التحميل: V13 — محدث مع اختيار الجودة والأسماء الفعالة")
+                              Text("إصدار محرك التحميل: V14 — مفصول للتحميلات والمكتبة مع دعم كافة المواقع")
                                   .font(.caption2)
                                   .foregroundColor(.secondary)
                           }
