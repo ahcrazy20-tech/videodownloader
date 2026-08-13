@@ -1,4 +1,4 @@
-name: Build VideoFlow ULTIMATE IPA
+name: Build VideoFlow ULTIMATE v4
 
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
     - name: Select Xcode 15
       run: sudo xcode-select -s /Applications/Xcode_15.2.app
 
-    - name: Create Full Project Structure
+    - name: Create Project Structure
       run: |
         mkdir -p VideoFlow/App
         mkdir -p VideoFlow/Views
@@ -28,6 +28,8 @@ jobs:
         mkdir -p VideoFlow/Resources/Assets.xcassets/AccentColor.colorset
         mkdir -p VideoFlow.xcodeproj
 
+    - name: Create Source Files
+      run: |
         # ============================================================
         # FILE 1: VideoFlowApp.swift
         # ============================================================
@@ -60,40 +62,13 @@ jobs:
         import UserNotifications
 
         class AppDelegate: NSObject, UIApplicationDelegate {
-            func application(
-                _ application: UIApplication,
-                didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
-            ) -> Bool {
-                setupAudioSession()
-                requestNotificationPermission()
-                return true
-            }
-
-            private func setupAudioSession() {
+            func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
                 do {
-                    try AVAudioSession.sharedInstance().setCategory(
-                        .playback,
-                        mode: .moviePlayback,
-                        options: [.allowAirPlay, .allowBluetooth]
-                    )
+                    try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [.allowAirPlay, .allowBluetooth])
                     try AVAudioSession.sharedInstance().setActive(true)
-                } catch {
-                    print("Audio session error: \(error)")
-                }
-            }
-
-            private func requestNotificationPermission() {
-                UNUserNotificationCenter.current().requestAuthorization(
-                    options: [.alert, .sound, .badge]
-                ) { _, _ in }
-            }
-
-            func application(
-                _ application: UIApplication,
-                handleEventsForBackgroundURLSession identifier: String,
-                completionHandler: @escaping () -> Void
-            ) {
-                DownloadManager.shared.backgroundCompletionHandler = completionHandler
+                } catch { print("Audio: \(error)") }
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+                return true
             }
         }
         SWIFTEOF
@@ -155,24 +130,16 @@ jobs:
         }
 
         enum VideoSourceType: String {
-            case direct  = "Direct MP4"
-            case hls     = "HLS Stream"
-            case dash    = "DASH Stream"
+            case direct = "Direct"
+            case hls = "HLS"
             case youtube = "YouTube"
-            case tiktok  = "TikTok"
+            case tiktok = "TikTok"
             case instagram = "Instagram"
             case facebook = "Facebook"
-            case twitter  = "Twitter/X"
-            case reddit   = "Reddit"
-            case vimeo    = "Vimeo"
-            case twitch   = "Twitch"
-            case soundcloud = "SoundCloud"
-            case pinterest = "Pinterest"
-            case tumblr   = "Tumblr"
-            case bilibili = "Bilibili"
-            case dailymotion = "Dailymotion"
-            case snapchat = "Snapchat"
-            case linkedin = "LinkedIn"
+            case twitter = "Twitter/X"
+            case reddit = "Reddit"
+            case vimeo = "Vimeo"
+            case other = "Web"
         }
 
         struct VideoItem: Identifiable, Equatable, Hashable {
@@ -185,7 +152,6 @@ jobs:
             var availableQualities: [VideoQuality]
             var sourceType: VideoSourceType
             var headers: [String: String] = [:]
-
             func hash(into hasher: inout Hasher) { hasher.combine(id) }
             static func == (lhs: VideoItem, rhs: VideoItem) -> Bool { lhs.id == rhs.id }
         }
@@ -203,14 +169,13 @@ jobs:
             case paused
             case completed
             case failed(error: String)
-
             var displayText: String {
                 switch self {
-                case .waiting:              return "Waiting..."
-                case .downloading(let p):  return "\(Int(p * 100))%"
-                case .paused:              return "Paused"
-                case .completed:           return "Completed"
-                case .failed(let e):       return "Failed: \(e)"
+                case .waiting: return "Waiting..."
+                case .downloading(let p): return "\(Int(p * 100))%"
+                case .paused: return "Paused"
+                case .completed: return "Completed"
+                case .failed(let e): return "Failed: \(e)"
                 }
             }
         }
@@ -219,127 +184,99 @@ jobs:
             let id: String
             let video: VideoItem
             let quality: VideoQuality
-
             @Published var status: DownloadStatus = .waiting
             @Published var progress: Double = 0
             @Published var downloadedBytes: Int64 = 0
             @Published var totalBytes: Int64 = 0
             @Published var speed: String = ""
             @Published var savedURL: URL?
-
-            var urlSessionTask: URLSessionDownloadTask?
+            var sessionTaskId: Int?
             private var lastBytes: Int64 = 0
             private var lastTime: Date?
 
             init(id: String = UUID().uuidString, video: VideoItem, quality: VideoQuality) {
-                self.id = id
-                self.video = video
-                self.quality = quality
+                self.id = id; self.video = video; self.quality = quality
             }
 
-            func updateProgress(bytesWritten: Int64, totalBytes: Int64) {
+            func updateProgress(bytesWritten: Int64, totalExpected: Int64) {
                 let now = Date()
                 self.downloadedBytes = bytesWritten
-                self.totalBytes = totalBytes
-                if totalBytes > 0 { self.progress = Double(bytesWritten) / Double(totalBytes) }
-                if let lastTime = lastTime {
-                    let elapsed = now.timeIntervalSince(lastTime)
-                    if elapsed > 0.5 {
+                self.totalBytes = totalExpected
+                if totalExpected > 0 { self.progress = Double(bytesWritten) / Double(totalExpected) }
+                if let lt = lastTime {
+                    let elapsed = now.timeIntervalSince(lt)
+                    if elapsed >= 0.5 {
                         let bps = Double(bytesWritten - lastBytes) / elapsed
-                        self.speed = formatSpeed(bps)
-                        self.lastBytes = bytesWritten
-                        self.lastTime = now
+                        self.speed = bps < 1024 ? "\(Int(bps)) B/s" : bps < 1048576 ? String(format: "%.1f KB/s", bps/1024) : String(format: "%.1f MB/s", bps/1048576)
+                        self.lastBytes = bytesWritten; self.lastTime = now
                     }
-                } else { self.lastTime = now }
+                } else { self.lastTime = now; self.lastBytes = bytesWritten }
                 self.status = .downloading(progress: self.progress)
             }
 
-            private func formatSpeed(_ bps: Double) -> String {
-                if bps < 1024 { return "\(Int(bps)) B/s" }
-                if bps < 1024*1024 { return String(format: "%.1f KB/s", bps/1024) }
-                return String(format: "%.1f MB/s", bps/(1024*1024))
-            }
-
             var sizeText: String {
-                if totalBytes > 0 { return "\(formatBytes(downloadedBytes)) / \(formatBytes(totalBytes))" }
-                return formatBytes(downloadedBytes)
-            }
-
-            private func formatBytes(_ bytes: Int64) -> String {
-                let f = ByteCountFormatter()
-                f.allowedUnits = [.useMB, .useGB]
-                f.countStyle = .file
-                return f.string(fromByteCount: bytes)
+                let fmt = ByteCountFormatter(); fmt.allowedUnits = [.useMB, .useGB]; fmt.countStyle = .file
+                if totalBytes > 0 { return "\(fmt.string(fromByteCount: downloadedBytes)) / \(fmt.string(fromByteCount: totalBytes))" }
+                return fmt.string(fromByteCount: downloadedBytes)
             }
         }
         SWIFTEOF
 
         # ============================================================
-        # FILE 5: DownloadManager.swift (FIXED FILE PERMISSIONS)
+        # FILE 5: DownloadManager.swift (STREAM-TO-FILE - NO PERMISSION BUGS)
         # ============================================================
-       cat > VideoFlow/Services/DownloadManager.swift << 'SWIFTEOF'
+        cat > VideoFlow/Services/DownloadManager.swift << 'SWIFTEOF'
         import Foundation
         import UserNotifications
 
         class DownloadManager: NSObject, ObservableObject {
             static let shared = DownloadManager()
-
             @Published var activeDownloads: [DownloadTask] = []
             @Published var completedVideos: [DownloadTask] = []
-
             var backgroundCompletionHandler: (() -> Void)?
-            private var urlSession: URLSession!
-            private var taskMap: [Int: DownloadTask] = [:]  // Use taskIdentifier instead
-            private var fileHandles: [Int: FileHandle] = [:]
-            private var destinationURLs: [Int: URL] = [:]
+
+            private var session: URLSession!
+            private var tasks: [Int: DownloadTask] = [:]
+            private var handles: [Int: FileHandle] = [:]
+            private var destURLs: [Int: URL] = [:]
 
             override init() {
                 super.init()
-                // ✅ Use default session (foreground) - more reliable for file handling
-                let config = URLSessionConfiguration.default
-                config.allowsCellularAccess = true
-                config.timeoutIntervalForRequest = 60
-                config.timeoutIntervalForResource = 3600
-                config.httpMaximumConnectionsPerHost = 6
-                config.waitsForConnectivity = true
-                urlSession = URLSession(configuration: config, delegate: self, delegateQueue: nil)
-                ensureDownloadsDirectoryExists()
-                loadSavedVideos()
+                let c = URLSessionConfiguration.default
+                c.allowsCellularAccess = true
+                c.timeoutIntervalForRequest = 60
+                c.timeoutIntervalForResource = 7200
+                c.httpMaximumConnectionsPerHost = 6
+                c.waitsForConnectivity = true
+                session = URLSession(configuration: c, delegate: self, delegateQueue: nil)
+                setupDir()
+                loadSaved()
             }
 
-            private func ensureDownloadsDirectoryExists() {
-                let dir = getDownloadsDirectory()
-                if !FileManager.default.fileExists(atPath: dir.path) {
-                    do {
-                        try FileManager.default.createDirectory(
-                            at: dir, withIntermediateDirectories: true, attributes: nil
-                        )
-                        print("✅ Downloads directory created: \(dir.path)")
-                    } catch {
-                        print("❌ Failed to create directory: \(error)")
-                    }
+            private func setupDir() {
+                let d = downloadsDir()
+                if !FileManager.default.fileExists(atPath: d.path) {
+                    try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
                 }
             }
 
-            func startDownload(video: VideoItem, quality: VideoQuality, customURL: String? = nil, customHeaders: [String: String] = [:]) {
-                let downloadURL = customURL ?? video.url
-                guard let url = URL(string: downloadURL) else {
-                    print("❌ Invalid URL: \(downloadURL)")
-                    return
-                }
+            func downloadsDir() -> URL {
+                FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("Downloads", isDirectory: true)
+            }
 
+            func startDownload(video: VideoItem, quality: VideoQuality) {
+                guard let url = URL(string: video.url) else { return }
                 let task = DownloadTask(video: video, quality: quality)
                 DispatchQueue.main.async { self.activeDownloads.append(task) }
 
-                // ✅ Prepare destination file
-                let safeName = sanitizeFileName(video.title)
+                let safe = sanitize(video.title)
                 let ext = quality == .audio ? "mp3" : "mp4"
-                let fileName = "\(safeName)_\(quality.rawValue)_\(Int(Date().timeIntervalSince1970)).\(ext)"
-                let destURL = getDownloadsDirectory().appendingPathComponent(fileName)
+                let name = "\(safe)_\(quality.rawValue)_\(Int(Date().timeIntervalSince1970)).\(ext)"
+                let dest = downloadsDir().appendingPathComponent(name)
 
-                // Create empty file
-                FileManager.default.createFile(atPath: destURL.path, contents: nil, attributes: nil)
-                guard let fileHandle = try? FileHandle(forWritingTo: destURL) else {
+                FileManager.default.createFile(atPath: dest.path, contents: nil)
+                guard let fh = try? FileHandle(forWritingTo: dest) else {
                     DispatchQueue.main.async {
                         task.status = .failed(error: "Cannot create file")
                         self.activeDownloads.removeAll { $0.id == task.id }
@@ -347,206 +284,135 @@ jobs:
                     return
                 }
 
-                var request = URLRequest(url: url)
-                request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
-                request.setValue("*/*", forHTTPHeaderField: "Accept")
-                request.setValue("identity;q=1, *;q=0", forHTTPHeaderField: "Accept-Encoding")
-
-                var allHeaders = video.headers
-                for (k, v) in customHeaders { allHeaders[k] = v }
-                for (key, value) in allHeaders {
-                    request.setValue(value, forHTTPHeaderField: key)
+                var req = URLRequest(url: url)
+                req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+                req.setValue("*/*", forHTTPHeaderField: "Accept")
+                req.setValue("identity;q=1, *;q=0", forHTTPHeaderField: "Accept-Encoding")
+                for (k, v) in video.headers { req.setValue(v, forHTTPHeaderField: k) }
+                if video.headers["Referer"] == nil, let h = url.host {
+                    req.setValue("https://\(h)/", forHTTPHeaderField: "Referer")
                 }
 
-                if allHeaders["Referer"] == nil, let host = url.host {
-                    request.setValue("https://\(host)/", forHTTPHeaderField: "Referer")
+                let dt = session.dataTask(with: req)
+                let tid = dt.taskIdentifier
+                task.sessionTaskId = tid
+                handles[tid] = fh
+                destURLs[tid] = dest
+                tasks[tid] = task
+                dt.resume()
+                DispatchQueue.main.async { task.status = .downloading(progress: 0) }
+            }
+
+            func pauseDownload(_ t: DownloadTask) {
+                guard let tid = t.sessionTaskId else { return }
+                session.getAllTasks { all in
+                    all.first { $0.taskIdentifier == tid }?.suspend()
+                    DispatchQueue.main.async { t.status = .paused }
                 }
+            }
 
-                // ✅ Use dataTask for streaming download (more reliable)
-                let dataTask = urlSession.dataTask(with: request)
-                let taskId = dataTask.taskIdentifier
-                fileHandles[taskId] = fileHandle
-                destinationURLs[taskId] = destURL
-                taskMap[taskId] = task
-                task.urlSessionTask = nil  // We use dataTask instead
+            func resumeDownload(_ t: DownloadTask) {
+                guard let tid = t.sessionTaskId else { return }
+                session.getAllTasks { all in
+                    all.first { $0.taskIdentifier == tid }?.resume()
+                    DispatchQueue.main.async { t.status = .downloading(progress: t.progress) }
+                }
+            }
 
-                dataTask.resume()
+            func cancelDownload(_ t: DownloadTask) {
+                if let tid = t.sessionTaskId {
+                    session.getAllTasks { all in all.first { $0.taskIdentifier == tid }?.cancel() }
+                    cleanup(tid)
+                }
+                DispatchQueue.main.async { self.activeDownloads.removeAll { $0.id == t.id } }
+            }
+
+            func deleteVideo(_ t: DownloadTask) {
+                if let u = t.savedURL { try? FileManager.default.removeItem(at: u) }
+                DispatchQueue.main.async { self.completedVideos.removeAll { $0.id == t.id } }
+            }
+
+            private func cleanup(_ tid: Int) {
+                try? handles[tid]?.close()
+                handles.removeValue(forKey: tid)
+                if let u = destURLs[tid] { try? FileManager.default.removeItem(at: u) }
+                destURLs.removeValue(forKey: tid)
+                tasks.removeValue(forKey: tid)
+            }
+
+            private func sanitize(_ name: String) -> String {
+                var s = name.components(separatedBy: CharacterSet(charactersIn: "/\\:*?\"<>|\n\r")).joined(separator: "_")
+                s = s.replacingOccurrences(of: " ", with: "_")
+                if s.count > 50 { s = String(s.prefix(50)) }
+                return s.isEmpty ? "video" : s
+            }
+
+            private func loadSaved() {
+                let d = downloadsDir()
+                guard let files = try? FileManager.default.contentsOfDirectory(at: d, includingPropertiesForKeys: nil) else { return }
+                let exts = Set(["mp4","m4v","mov","mkv","avi","mp3","m4a","webm"])
                 DispatchQueue.main.async {
-                    task.status = .downloading(progress: 0)
-                }
-            }
-
-            func pauseDownload(_ task: DownloadTask) {
-                // Find and cancel task
-                if let taskId = taskMap.first(where: { $0.value.id == task.id })?.key {
-                    urlSession.getAllTasks { tasks in
-                        for t in tasks where t.taskIdentifier == taskId {
-                            t.suspend()
-                            DispatchQueue.main.async { task.status = .paused }
-                        }
+                    self.completedVideos = files.filter { exts.contains($0.pathExtension.lowercased()) }.map { u in
+                        let v = VideoItem(id: u.lastPathComponent, title: u.deletingPathExtension().lastPathComponent, url: u.absoluteString, availableQualities: [.p720], sourceType: .direct)
+                        let t = DownloadTask(video: v, quality: .p720); t.savedURL = u; t.status = .completed; return t
                     }
                 }
             }
 
-            func resumeDownload(_ task: DownloadTask) {
-                if let taskId = taskMap.first(where: { $0.value.id == task.id })?.key {
-                    urlSession.getAllTasks { tasks in
-                        for t in tasks where t.taskIdentifier == taskId {
-                            t.resume()
-                            DispatchQueue.main.async { task.status = .downloading(progress: task.progress) }
-                        }
-                    }
-                }
-            }
-
-            func cancelDownload(_ task: DownloadTask) {
-                if let taskId = taskMap.first(where: { $0.value.id == task.id })?.key {
-                    urlSession.getAllTasks { tasks in
-                        for t in tasks where t.taskIdentifier == taskId {
-                            t.cancel()
-                        }
-                    }
-                    // Cleanup
-                    if let handle = fileHandles[taskId] {
-                        try? handle.close()
-                        fileHandles.removeValue(forKey: taskId)
-                    }
-                    if let destURL = destinationURLs[taskId] {
-                        try? FileManager.default.removeItem(at: destURL)
-                        destinationURLs.removeValue(forKey: taskId)
-                    }
-                    taskMap.removeValue(forKey: taskId)
-                }
-                DispatchQueue.main.async { self.activeDownloads.removeAll { $0.id == task.id } }
-            }
-
-            func deleteVideo(_ task: DownloadTask) {
-                if let url = task.savedURL { try? FileManager.default.removeItem(at: url) }
-                DispatchQueue.main.async { self.completedVideos.removeAll { $0.id == task.id } }
-            }
-
-            private func getDownloadsDirectory() -> URL {
-                let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
-                return paths[0].appendingPathComponent("VideoFlow", isDirectory: true)
-            }
-
-            private func sanitizeFileName(_ name: String) -> String {
-                let invalidChars = CharacterSet(charactersIn: "/\\:*?\"<>|")
-                var cleaned = name.components(separatedBy: invalidChars).joined(separator: "_")
-                cleaned = cleaned.replacingOccurrences(of: " ", with: "_")
-                cleaned = cleaned.replacingOccurrences(of: "\n", with: "")
-                cleaned = cleaned.replacingOccurrences(of: "\r", with: "")
-                if cleaned.count > 50 { cleaned = String(cleaned.prefix(50)) }
-                return cleaned.isEmpty ? "video_\(Int(Date().timeIntervalSince1970))" : cleaned
-            }
-
-            private func loadSavedVideos() {
-                let dir = getDownloadsDirectory()
-                guard let files = try? FileManager.default.contentsOfDirectory(
-                    at: dir, includingPropertiesForKeys: [.fileSizeKey]
-                ) else { return }
-                let ext = ["mp4","m4v","mov","mkv","avi","mp3","m4a","webm"]
-                let videoFiles = files.filter { ext.contains($0.pathExtension.lowercased()) }
-                DispatchQueue.main.async {
-                    self.completedVideos = videoFiles.map { url in
-                        let video = VideoItem(
-                            id: url.lastPathComponent,
-                            title: url.deletingPathExtension().lastPathComponent,
-                            url: url.absoluteString,
-                            thumbnailURL: nil, duration: nil, estimatedSize: nil,
-                            availableQualities: [.p720], sourceType: .direct
-                        )
-                        let task = DownloadTask(video: video, quality: .p720)
-                        task.savedURL = url
-                        task.status = .completed
-                        return task
-                    }
-                }
-            }
-
-            private func sendNotification(for task: DownloadTask) {
-                let content = UNMutableNotificationContent()
-                content.title = "Download Complete"
-                content.body = "\(task.video.title) - \(task.quality.rawValue)"
-                content.sound = .default
-                let req = UNNotificationRequest(identifier: task.id, content: content, trigger: nil)
-                UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+            private func notify(_ t: DownloadTask) {
+                let c = UNMutableNotificationContent()
+                c.title = "Download Complete"; c.body = t.video.title; c.sound = .default
+                UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: t.id, content: c, trigger: nil))
             }
         }
 
-        // MARK: - URLSessionDataDelegate (Stream download to file)
         extension DownloadManager: URLSessionDataDelegate {
-
-            func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
-                            didReceive response: URLResponse,
-                            completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-                let taskId = dataTask.taskIdentifier
-                if let task = taskMap[taskId] {
-                    let totalBytes = response.expectedContentLength
-                    DispatchQueue.main.async {
-                        task.totalBytes = totalBytes
-                    }
+            func urlSession(_ s: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+                let tid = dataTask.taskIdentifier
+                if let t = tasks[tid] {
+                    let total = response.expectedContentLength
+                    DispatchQueue.main.async { t.totalBytes = total > 0 ? total : 0 }
                 }
                 completionHandler(.allow)
             }
 
-            func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-                let taskId = dataTask.taskIdentifier
-                guard let task = taskMap[taskId],
-                      let fileHandle = fileHandles[taskId] else { return }
-
-                // Write chunk to file
+            func urlSession(_ s: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+                let tid = dataTask.taskIdentifier
+                guard let t = tasks[tid], let fh = handles[tid] else { return }
                 do {
-                    try fileHandle.write(contentsOf: data)
-                    let currentBytes = task.downloadedBytes + Int64(data.count)
-                    DispatchQueue.main.async {
-                        task.updateProgress(bytesWritten: currentBytes, totalBytes: task.totalBytes)
-                    }
+                    try fh.write(contentsOf: data)
+                    let cur = t.downloadedBytes + Int64(data.count)
+                    DispatchQueue.main.async { t.updateProgress(bytesWritten: cur, totalExpected: t.totalBytes) }
                 } catch {
-                    print("❌ Write error: \(error)")
+                    DispatchQueue.main.async { t.status = .failed(error: "Write: \(error.localizedDescription)") }
                 }
             }
 
-            func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-                let taskId = task.taskIdentifier
-                guard let dlTask = taskMap[taskId] else { return }
-
-                // Close file handle
-                if let handle = fileHandles[taskId] {
-                    try? handle.close()
-                    fileHandles.removeValue(forKey: taskId)
-                }
-
-                let destURL = destinationURLs[taskId]
-                destinationURLs.removeValue(forKey: taskId)
-                taskMap.removeValue(forKey: taskId)
+            func urlSession(_ s: URLSession, task st: URLSessionTask, didCompleteWithError error: Error?) {
+                let tid = st.taskIdentifier
+                guard let t = tasks[tid] else { return }
+                try? handles[tid]?.close()
+                handles.removeValue(forKey: tid)
+                let dest = destURLs.removeValue(forKey: tid)
+                tasks.removeValue(forKey: tid)
 
                 if let error = error {
-                    // Failed - remove partial file
-                    if let url = destURL {
-                        try? FileManager.default.removeItem(at: url)
-                    }
+                    if let d = dest { try? FileManager.default.removeItem(at: d) }
                     if (error as NSError).code != NSURLErrorCancelled {
-                        DispatchQueue.main.async {
-                            dlTask.status = .failed(error: error.localizedDescription)
-                        }
+                        DispatchQueue.main.async { t.status = .failed(error: error.localizedDescription) }
                     }
                 } else {
-                    // ✅ Success!
                     DispatchQueue.main.async {
-                        if let url = destURL {
-                            dlTask.savedURL = url
-                        }
-                        dlTask.status = .completed
-                        dlTask.progress = 1.0
-                        self.activeDownloads.removeAll { $0.id == dlTask.id }
-                        self.completedVideos.insert(dlTask, at: 0)
-                        self.sendNotification(for: dlTask)
+                        t.savedURL = dest; t.status = .completed; t.progress = 1.0
+                        self.activeDownloads.removeAll { $0.id == t.id }
+                        self.completedVideos.insert(t, at: 0)
+                        self.notify(t)
                     }
                 }
             }
         }
         SWIFTEOF
+
         # ============================================================
         # FILE 6: PlayerManager.swift
         # ============================================================
@@ -557,7 +423,6 @@ jobs:
 
         class PlayerManager: ObservableObject {
             static let shared = PlayerManager()
-
             @Published var currentVideo: DownloadTask?
             @Published var isPlaying = false
             @Published var isFullScreen = false
@@ -568,663 +433,285 @@ jobs:
             @Published var playbackSpeed: Float = 1.0
             @Published var isMuted = false
             @Published var isLoading = false
-
             var player: AVPlayer?
-            private var timeObserver: Any?
-            private var cancellables = Set<AnyCancellable>()
+            private var obs: Any?
+            private var subs = Set<AnyCancellable>()
 
             func playVideo(_ task: DownloadTask) {
                 currentVideo = task
-                let url: URL?
-                if let saved = task.savedURL { url = saved }
-                else { url = URL(string: task.video.url) }
-                guard let videoURL = url else { return }
-
-                isLoading = true
-                player?.pause()
-                player = AVPlayer(url: videoURL)
-                player?.volume = volume
-
-                player?.currentItem?.publisher(for: \.duration)
-                    .receive(on: DispatchQueue.main)
-                    .sink { [weak self] dur in
-                        let secs = dur.seconds
-                        self?.duration = secs.isNaN || secs.isInfinite ? 0 : secs
-                        self?.isLoading = false
-                    }.store(in: &cancellables)
-
-                let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
-                timeObserver = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) {
-                    [weak self] time in
-                    self?.currentTime = time.seconds
-                }
-
-                player?.play()
-                isPlaying = true
-                isFullScreen = true
-                isMinimized = false
+                guard let url = task.savedURL ?? URL(string: task.video.url) else { return }
+                isLoading = true; player?.pause()
+                player = AVPlayer(url: url); player?.volume = volume
+                player?.currentItem?.publisher(for: \.duration).receive(on: DispatchQueue.main)
+                    .sink { [weak self] d in
+                        let s = d.seconds; self?.duration = s.isNaN || s.isInfinite ? 0 : s; self?.isLoading = false
+                    }.store(in: &subs)
+                obs = player?.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self] t in self?.currentTime = t.seconds }
+                player?.play(); isPlaying = true; isFullScreen = true; isMinimized = false
             }
 
-            func togglePlayPause() {
-                isPlaying ? player?.pause() : player?.play()
-                isPlaying.toggle()
-            }
-
-            func seek(to time: Double) {
-                let t = CMTime(seconds: time, preferredTimescale: 600)
-                player?.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
-            }
-
+            func togglePlayPause() { isPlaying ? player?.pause() : player?.play(); isPlaying.toggle() }
+            func seek(to t: Double) { player?.seek(to: CMTime(seconds: t, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) }
             func skipForward(_ s: Double = 10) { seek(to: min(currentTime + s, duration)) }
             func skipBackward(_ s: Double = 10) { seek(to: max(currentTime - s, 0)) }
-
-            func setSpeed(_ speed: Float) {
-                playbackSpeed = speed
-                if isPlaying { player?.rate = speed }
-            }
-
-            func setVolume(_ vol: Float) { volume = vol; player?.volume = vol }
+            func setSpeed(_ s: Float) { playbackSpeed = s; if isPlaying { player?.rate = s } }
+            func setVolume(_ v: Float) { volume = v; player?.volume = v }
             func minimize() { isFullScreen = false; isMinimized = true }
-
             func close() {
-                if let obs = timeObserver { player?.removeTimeObserver(obs); timeObserver = nil }
-                player?.pause(); player = nil
-                isPlaying = false; isFullScreen = false; isMinimized = false
+                if let o = obs { player?.removeTimeObserver(o); obs = nil }
+                player?.pause(); player = nil; isPlaying = false; isFullScreen = false; isMinimized = false
                 currentVideo = nil; currentTime = 0; duration = 0
             }
-
             var progress: Double { duration > 0 ? currentTime / duration : 0 }
-
-            func formattedTime(_ t: Double) -> String {
+            func fmt(_ t: Double) -> String {
                 guard !t.isNaN && !t.isInfinite else { return "0:00" }
-                let s = Int(t); let h = s/3600; let m = (s%3600)/60; let sec = s%60
-                return h > 0 ? String(format: "%d:%02d:%02d", h,m,sec) : String(format: "%d:%02d", m,sec)
+                let s = Int(t); return s >= 3600 ? String(format: "%d:%02d:%02d", s/3600, (s%3600)/60, s%60) : String(format: "%d:%02d", s/60, s%60)
             }
         }
         SWIFTEOF
 
         # ============================================================
-        # FILE 7: UltimateExtractor.swift (MEGA EXTRACTION SYSTEM)
+        # FILE 7: UltimateExtractor.swift (MEGA ENGINE)
         # ============================================================
         cat > VideoFlow/Extractors/UltimateExtractor.swift << 'SWIFTEOF'
         import Foundation
 
-        // MARK: - Extraction Result
         struct ExtractedStream {
-            let url: String
-            let quality: VideoQuality
-            let headers: [String: String]
-            let filename: String?
-            let hasAudio: Bool
+            let url: String; let quality: VideoQuality; let headers: [String: String]; let filename: String?; let hasAudio: Bool
         }
 
         struct ExtractedVideo {
-            let title: String
-            let streams: [ExtractedStream]
-            let thumbnail: String?
-            let sourceType: VideoSourceType
+            let title: String; let streams: [ExtractedStream]; let thumbnail: String?; let sourceType: VideoSourceType
         }
 
-        enum ExtractorError: LocalizedError {
-            case allBackendsFailed(String)
-            case invalidURL
-            case noStreamsFound
-            case networkError(String)
-
+        enum ExError: LocalizedError {
+            case allFailed(String); case invalidURL; case noStreams; case network(String)
             var errorDescription: String? {
                 switch self {
-                case .allBackendsFailed(let msg): return "All servers failed: \(msg)"
+                case .allFailed(let m): return "All servers failed: \(m)"
                 case .invalidURL: return "Invalid URL"
-                case .noStreamsFound: return "No downloadable video found"
-                case .networkError(let msg): return "Network: \(msg)"
+                case .noStreams: return "No video found on this page"
+                case .network(let m): return "Network: \(m)"
                 }
             }
         }
 
-        // MARK: - Ultimate Multi-Layer Extractor
         class UltimateExtractor {
             static let shared = UltimateExtractor()
 
-            // 15+ Cobalt Backend Mirrors (verified working 2024-2025)
-            private let cobaltBackends: [String] = [
+            private let cobaltMirrors = [
                 "https://api.cobalt.tools",
                 "https://co.wuk.sh",
                 "https://cobalt-api.kwiatekmiki.com",
                 "https://cobalt-backend.canine.tools",
-                "https://dl01.yt-dl.click",
                 "https://cobalt.synzr.space",
-                "https://api.dl.sauw.ca",
                 "https://capi.oak.li",
                 "https://cobalt-api.ayo.tf",
-                "https://api.cobalt.tools/api/json"
+                "https://api.dl.sauw.ca"
             ]
 
-            // MARK: - Main Extract with Multi-Layer Fallback
-            func extract(from pageURL: String,
-                         quality: VideoQuality = .p1080,
-                         audioOnly: Bool = false,
-                         completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
+            func detectSite(_ url: String) -> VideoSourceType {
+                let l = url.lowercased()
+                if l.contains("youtube.com") || l.contains("youtu.be") { return .youtube }
+                if l.contains("tiktok.com") { return .tiktok }
+                if l.contains("instagram.com") { return .instagram }
+                if l.contains("facebook.com") || l.contains("fb.watch") || l.contains("fb.com") { return .facebook }
+                if l.contains("twitter.com") || l.contains("x.com") { return .twitter }
+                if l.contains("reddit.com") { return .reddit }
+                if l.contains("vimeo.com") { return .vimeo }
+                if l.contains(".m3u8") { return .hls }
+                if l.contains(".mp4") || l.contains(".webm") { return .direct }
+                return .other
+            }
 
-                print("🎯 Extracting: \(pageURL)")
-                let siteType = detectSite(url: pageURL)
-                print("📍 Site type: \(siteType)")
+            func extract(from url: String, quality: VideoQuality = .p1080, audioOnly: Bool = false, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
+                let site = detectSite(url)
 
-                // Try site-specific extractor FIRST (fastest & most reliable)
-                trySiteSpecific(url: pageURL, siteType: siteType, quality: quality) { result in
-                    switch result {
-                    case .success(let video):
-                        print("✅ Site-specific extractor worked")
-                        completion(.success(video))
+                // Direct links - no extraction needed
+                if site == .direct || site == .hls {
+                    let s = ExtractedStream(url: url, quality: quality, headers: [:], filename: nil, hasAudio: true)
+                    completion(.success(ExtractedVideo(title: URL(string: url)?.lastPathComponent ?? "Video", streams: [s], thumbnail: nil, sourceType: site)))
+                    return
+                }
+
+                // Try site-specific first, then Cobalt chain, then HTML scrape
+                trySiteSpecific(url: url, site: site, quality: quality) { [weak self] r in
+                    switch r {
+                    case .success(let v): completion(.success(v))
                     case .failure:
-                        print("⚠️ Site-specific failed, trying Cobalt...")
-                        // Fallback to Cobalt with all mirrors
-                        self.tryCobaltChain(url: pageURL,
-                                            quality: quality,
-                                            audioOnly: audioOnly,
-                                            index: 0,
-                                            completion: completion)
-                    }
-                }
-            }
-
-            // MARK: - Site Detection
-            func detectSite(url: String) -> VideoSourceType {
-                let lower = url.lowercased()
-                if lower.contains("youtube.com") || lower.contains("youtu.be") { return .youtube }
-                if lower.contains("tiktok.com") { return .tiktok }
-                if lower.contains("instagram.com") { return .instagram }
-                if lower.contains("facebook.com") || lower.contains("fb.watch") || lower.contains("fb.com") { return .facebook }
-                if lower.contains("twitter.com") || lower.contains("x.com") { return .twitter }
-                if lower.contains("reddit.com") { return .reddit }
-                if lower.contains("vimeo.com") { return .vimeo }
-                if lower.contains("twitch.tv") { return .twitch }
-                if lower.contains("soundcloud.com") { return .soundcloud }
-                if lower.contains("pinterest.com") { return .pinterest }
-                if lower.contains("tumblr.com") { return .tumblr }
-                if lower.contains("bilibili.com") { return .bilibili }
-                if lower.contains("dailymotion.com") { return .dailymotion }
-                if lower.contains("snapchat.com") { return .snapchat }
-                if lower.contains("linkedin.com") { return .linkedin }
-                if lower.contains(".m3u8") { return .hls }
-                if lower.contains(".mp4") || lower.contains(".webm") { return .direct }
-                return .direct
-            }
-
-            // MARK: - Site-Specific Extractors
-            private func trySiteSpecific(url: String,
-                                         siteType: VideoSourceType,
-                                         quality: VideoQuality,
-                                         completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                switch siteType {
-                case .tiktok:
-                    TikTokAPIExtractor.extract(url: url, completion: completion)
-                case .instagram:
-                    InstagramExtractor.extract(url: url, completion: completion)
-                case .facebook:
-                    FacebookExtractor.extract(url: url, completion: completion)
-                case .twitter:
-                    TwitterExtractor.extract(url: url, completion: completion)
-                case .reddit:
-                    RedditExtractor.extract(url: url, completion: completion)
-                case .direct, .hls:
-                    let stream = ExtractedStream(url: url, quality: quality, headers: [:], filename: nil, hasAudio: true)
-                    completion(.success(ExtractedVideo(
-                        title: URL(string: url)?.lastPathComponent ?? "Video",
-                        streams: [stream], thumbnail: nil,
-                        sourceType: siteType
-                    )))
-                default:
-                    completion(.failure(ExtractorError.noStreamsFound))
-                }
-            }
-
-            // MARK: - Cobalt Chain (tries all mirrors)
-            private func tryCobaltChain(url: String,
-                                        quality: VideoQuality,
-                                        audioOnly: Bool,
-                                        index: Int,
-                                        completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                guard index < cobaltBackends.count else {
-                    print("⚠️ All Cobalt mirrors failed, trying HTML scrape...")
-                    HTMLScraper.extract(url: url, completion: completion)
-                    return
-                }
-
-                let backend = cobaltBackends[index]
-                print("🔄 Cobalt attempt \(index + 1)/\(cobaltBackends.count): \(backend)")
-
-                CobaltAPI.request(backend: backend,
-                                  videoURL: url,
-                                  quality: quality.cobaltValue,
-                                  audioOnly: audioOnly) { result in
-                    switch result {
-                    case .success(let extracted):
-                        completion(.success(extracted))
-                    case .failure:
-                        // Try next backend
-                        self.tryCobaltChain(url: url,
-                                            quality: quality,
-                                            audioOnly: audioOnly,
-                                            index: index + 1,
-                                            completion: completion)
-                    }
-                }
-            }
-        }
-
-        // MARK: - Cobalt API Client
-        class CobaltAPI {
-            static func request(backend: String,
-                                videoURL: String,
-                                quality: String,
-                                audioOnly: Bool,
-                                completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                guard let apiURL = URL(string: backend) else {
-                    completion(.failure(ExtractorError.invalidURL))
-                    return
-                }
-
-                var request = URLRequest(url: apiURL)
-                request.httpMethod = "POST"
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.setValue("application/json", forHTTPHeaderField: "Accept")
-                request.setValue("VideoFlow/3.0", forHTTPHeaderField: "User-Agent")
-                request.timeoutInterval = 25
-
-                let payload: [String: Any] = [
-                    "url": videoURL,
-                    "videoQuality": quality,
-                    "audioFormat": "mp3",
-                    "audioBitrate": "320",
-                    "filenameStyle": "pretty",
-                    "downloadMode": audioOnly ? "audio" : "auto",
-                    "youtubeVideoCodec": "h264",
-                    "youtubeDubLang": "en",
-                    "alwaysProxy": false,
-                    "disableMetadata": false,
-                    "tiktokFullAudio": true,
-                    "tiktokH265": false,
-                    "twitterGif": true
-                ]
-
-                request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-
-                URLSession.shared.dataTask(with: request) { data, response, error in
-                    if let error = error {
-                        completion(.failure(ExtractorError.networkError(error.localizedDescription)))
-                        return
-                    }
-                    guard let data = data,
-                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                        completion(.failure(ExtractorError.noStreamsFound))
-                        return
-                    }
-
-                    if let status = json["status"] as? String {
-                        switch status {
-                        case "tunnel", "redirect", "stream":
-                            self.parseStream(json: json, sourceURL: videoURL, completion: completion)
-                        case "picker":
-                            self.parsePicker(json: json, sourceURL: videoURL, completion: completion)
-                        case "error":
-                            let msg = ((json["error"] as? [String: Any])?["code"] as? String) ?? "unknown"
-                            completion(.failure(ExtractorError.networkError(msg)))
-                        default:
-                            completion(.failure(ExtractorError.noStreamsFound))
-                        }
-                    } else if let url = json["url"] as? String {
-                        let filename = json["filename"] as? String ?? "Video"
-                        let stream = ExtractedStream(url: url, quality: .p1080, headers: [:], filename: filename, hasAudio: true)
-                        completion(.success(ExtractedVideo(
-                            title: filename.replacingOccurrences(of: ".mp4", with: ""),
-                            streams: [stream], thumbnail: nil,
-                            sourceType: UltimateExtractor.shared.detectSite(url: videoURL)
-                        )))
-                    } else {
-                        completion(.failure(ExtractorError.noStreamsFound))
-                    }
-                }.resume()
-            }
-
-            private static func parseStream(json: [String: Any], sourceURL: String,
-                                            completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                guard let url = json["url"] as? String else {
-                    completion(.failure(ExtractorError.noStreamsFound))
-                    return
-                }
-                let filename = json["filename"] as? String ?? "Video"
-                let title = filename.replacingOccurrences(of: ".mp4", with: "").replacingOccurrences(of: ".mp3", with: "")
-                let stream = ExtractedStream(url: url, quality: .p1080, headers: [:], filename: filename, hasAudio: true)
-                completion(.success(ExtractedVideo(
-                    title: title, streams: [stream], thumbnail: nil,
-                    sourceType: UltimateExtractor.shared.detectSite(url: sourceURL)
-                )))
-            }
-
-            private static func parsePicker(json: [String: Any], sourceURL: String,
-                                            completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                guard let picker = json["picker"] as? [[String: Any]] else {
-                    completion(.failure(ExtractorError.noStreamsFound))
-                    return
-                }
-                var streams: [ExtractedStream] = []
-                for item in picker {
-                    if let url = item["url"] as? String {
-                        streams.append(ExtractedStream(url: url, quality: .p720, headers: [:], filename: nil, hasAudio: true))
-                    }
-                }
-                if streams.isEmpty {
-                    completion(.failure(ExtractorError.noStreamsFound))
-                } else {
-                    completion(.success(ExtractedVideo(
-                        title: "Media (\(streams.count) items)",
-                        streams: streams, thumbnail: nil,
-                        sourceType: UltimateExtractor.shared.detectSite(url: sourceURL)
-                    )))
-                }
-            }
-        }
-
-        // MARK: - TikTok Extractor (using TikWM API - unlimited)
-        class TikTokAPIExtractor {
-            static func extract(url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                let apiURL = "https://tikwm.com/api/"
-                guard let requestURL = URL(string: apiURL) else {
-                    completion(.failure(ExtractorError.invalidURL))
-                    return
-                }
-                var request = URLRequest(url: requestURL)
-                request.httpMethod = "POST"
-                request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-                request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
-                let body = "url=\(url.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? url)&hd=1"
-                request.httpBody = body.data(using: .utf8)
-
-                URLSession.shared.dataTask(with: request) { data, _, error in
-                    guard let data = data,
-                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let dataDict = json["data"] as? [String: Any] else {
-                        completion(.failure(ExtractorError.noStreamsFound))
-                        return
-                    }
-
-                    var streams: [ExtractedStream] = []
-                    let title = dataDict["title"] as? String ?? "TikTok Video"
-                    let cover = dataDict["cover"] as? String
-
-                    if let hdplay = dataDict["hdplay"] as? String {
-                        streams.append(ExtractedStream(url: hdplay, quality: .p1080, headers: [:], filename: nil, hasAudio: true))
-                    }
-                    if let play = dataDict["play"] as? String {
-                        streams.append(ExtractedStream(url: play, quality: .p720, headers: [:], filename: nil, hasAudio: true))
-                    }
-                    if let wmplay = dataDict["wmplay"] as? String {
-                        streams.append(ExtractedStream(url: wmplay, quality: .p480, headers: [:], filename: "watermarked", hasAudio: true))
-                    }
-                    if let music = dataDict["music"] as? String {
-                        streams.append(ExtractedStream(url: music, quality: .audio, headers: [:], filename: "audio", hasAudio: true))
-                    }
-
-                    if streams.isEmpty {
-                        completion(.failure(ExtractorError.noStreamsFound))
-                    } else {
-                        completion(.success(ExtractedVideo(
-                            title: title, streams: streams, thumbnail: cover, sourceType: .tiktok
-                        )))
-                    }
-                }.resume()
-            }
-        }
-
-        // MARK: - Instagram Extractor
-        class InstagramExtractor {
-            static func extract(url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                guard let pageURL = URL(string: url) else {
-                    completion(.failure(ExtractorError.invalidURL))
-                    return
-                }
-                var request = URLRequest(url: pageURL)
-                request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
-                request.setValue("*/*", forHTTPHeaderField: "Accept")
-
-                URLSession.shared.dataTask(with: request) { data, _, _ in
-                    guard let data = data, let html = String(data: data, encoding: .utf8) else {
-                        completion(.failure(ExtractorError.noStreamsFound))
-                        return
-                    }
-
-                    let patterns = [
-                        "\"video_url\":\"([^\"]+)\"",
-                        "\"contentUrl\":\"([^\"]+\\.mp4[^\"]*)\"",
-                        "property=\"og:video\" content=\"([^\"]+)\""
-                    ]
-
-                    for pattern in patterns {
-                        if let regex = try? NSRegularExpression(pattern: pattern),
-                           let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-                           let range = Range(match.range(at: 1), in: html) {
-                            var videoURL = String(html[range])
-                            videoURL = videoURL.replacingOccurrences(of: "\\u0026", with: "&")
-                            videoURL = videoURL.replacingOccurrences(of: "\\/", with: "/")
-
-                            let headers = ["Referer": "https://www.instagram.com/"]
-                            let stream = ExtractedStream(url: videoURL, quality: .p720, headers: headers, filename: nil, hasAudio: true)
-                            completion(.success(ExtractedVideo(
-                                title: "Instagram Video",
-                                streams: [stream], thumbnail: nil, sourceType: .instagram
-                            )))
-                            return
-                        }
-                    }
-                    completion(.failure(ExtractorError.noStreamsFound))
-                }.resume()
-            }
-        }
-
-        // MARK: - Facebook Extractor
-        class FacebookExtractor {
-            static func extract(url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                let mobileURL = url.replacingOccurrences(of: "www.facebook.com", with: "m.facebook.com")
-                                   .replacingOccurrences(of: "web.facebook.com", with: "m.facebook.com")
-                guard let pageURL = URL(string: mobileURL) else {
-                    completion(.failure(ExtractorError.invalidURL))
-                    return
-                }
-                var request = URLRequest(url: pageURL)
-                request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
-
-                URLSession.shared.dataTask(with: request) { data, _, _ in
-                    guard let data = data, let html = String(data: data, encoding: .utf8) else {
-                        completion(.failure(ExtractorError.noStreamsFound))
-                        return
-                    }
-                    var streams: [ExtractedStream] = []
-                    let headers = ["Referer": "https://www.facebook.com/"]
-
-                    let patterns = [
-                        ("hd_src\":\"([^\"]+)\"", VideoQuality.p1080),
-                        ("sd_src\":\"([^\"]+)\"", VideoQuality.p480),
-                        ("browser_native_hd_url\":\"([^\"]+)\"", VideoQuality.p720),
-                        ("browser_native_sd_url\":\"([^\"]+)\"", VideoQuality.p480)
-                    ]
-
-                    for (pattern, quality) in patterns {
-                        if let regex = try? NSRegularExpression(pattern: pattern),
-                           let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-                           let range = Range(match.range(at: 1), in: html) {
-                            var vURL = String(html[range])
-                            vURL = vURL.replacingOccurrences(of: "\\/", with: "/")
-                            vURL = vURL.replacingOccurrences(of: "\\u0025", with: "%")
-                            vURL = vURL.replacingOccurrences(of: "\\u0026", with: "&")
-                            if !streams.contains(where: { $0.quality == quality }) {
-                                streams.append(ExtractedStream(url: vURL, quality: quality, headers: headers, filename: nil, hasAudio: true))
+                        self?.tryCobaltChain(url: url, quality: quality, audioOnly: audioOnly, idx: 0) { r2 in
+                            switch r2 {
+                            case .success(let v): completion(.success(v))
+                            case .failure: self?.htmlScrape(url: url, completion: completion) ?? completion(.failure(ExError.allFailed("No extractor")))
                             }
                         }
                     }
-
-                    if streams.isEmpty {
-                        completion(.failure(ExtractorError.noStreamsFound))
-                    } else {
-                        completion(.success(ExtractedVideo(
-                            title: "Facebook Video", streams: streams,
-                            thumbnail: nil, sourceType: .facebook
-                        )))
-                    }
-                }.resume()
-            }
-        }
-
-        // MARK: - Twitter/X Extractor
-        class TwitterExtractor {
-            static func extract(url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                // Convert x.com to twitter.com and use fxtwitter (free API mirror)
-                var apiURL = url.replacingOccurrences(of: "x.com", with: "api.fxtwitter.com")
-                apiURL = apiURL.replacingOccurrences(of: "twitter.com", with: "api.fxtwitter.com")
-
-                guard let requestURL = URL(string: apiURL) else {
-                    completion(.failure(ExtractorError.invalidURL))
-                    return
                 }
+            }
 
-                URLSession.shared.dataTask(with: requestURL) { data, _, _ in
-                    guard let data = data,
-                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let tweet = json["tweet"] as? [String: Any] else {
-                        completion(.failure(ExtractorError.noStreamsFound))
-                        return
-                    }
+            // MARK: - Site Specific
+            private func trySiteSpecific(url: String, site: VideoSourceType, quality: VideoQuality, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
+                switch site {
+                case .tiktok: tikTokExtract(url, completion: completion)
+                case .twitter: twitterExtract(url, completion: completion)
+                case .reddit: redditExtract(url, completion: completion)
+                case .instagram: instagramExtract(url, completion: completion)
+                case .facebook: facebookExtract(url, completion: completion)
+                default: completion(.failure(ExError.noStreams))
+                }
+            }
 
-                    let title = tweet["text"] as? String ?? "Twitter Video"
+            // MARK: - TikTok via TikWM
+            private func tikTokExtract(_ url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
+                guard let api = URL(string: "https://tikwm.com/api/") else { completion(.failure(ExError.invalidURL)); return }
+                var req = URLRequest(url: api); req.httpMethod = "POST"
+                req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+                req.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+                req.httpBody = "url=\(url.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? url)&hd=1".data(using: .utf8)
+
+                URLSession.shared.dataTask(with: req) { data, _, _ in
+                    guard let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let d = j["data"] as? [String: Any] else { completion(.failure(ExError.noStreams)); return }
                     var streams: [ExtractedStream] = []
-
-                    if let media = tweet["media"] as? [String: Any],
-                       let videos = media["videos"] as? [[String: Any]] {
-                        for video in videos {
-                            if let vurl = video["url"] as? String {
-                                streams.append(ExtractedStream(url: vurl, quality: .p720, headers: [:], filename: nil, hasAudio: true))
-                            }
-                        }
-                    }
-
-                    if streams.isEmpty {
-                        completion(.failure(ExtractorError.noStreamsFound))
-                    } else {
-                        completion(.success(ExtractedVideo(
-                            title: String(title.prefix(60)), streams: streams,
-                            thumbnail: nil, sourceType: .twitter
-                        )))
-                    }
+                    let title = d["title"] as? String ?? "TikTok Video"
+                    if let u = d["hdplay"] as? String { streams.append(ExtractedStream(url: u, quality: .p1080, headers: [:], filename: nil, hasAudio: true)) }
+                    if let u = d["play"] as? String { streams.append(ExtractedStream(url: u, quality: .p720, headers: [:], filename: nil, hasAudio: true)) }
+                    if let u = d["music"] as? String { streams.append(ExtractedStream(url: u, quality: .audio, headers: [:], filename: "audio", hasAudio: true)) }
+                    streams.isEmpty ? completion(.failure(ExError.noStreams)) : completion(.success(ExtractedVideo(title: title, streams: streams, thumbnail: d["cover"] as? String, sourceType: .tiktok)))
                 }.resume()
             }
-        }
 
-        // MARK: - Reddit Extractor
-        class RedditExtractor {
-            static func extract(url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                // Add .json to Reddit URL for API access
-                var jsonURL = url
-                if !jsonURL.hasSuffix(".json") {
-                    if jsonURL.hasSuffix("/") { jsonURL += ".json" }
-                    else { jsonURL += ".json" }
-                }
-
-                guard let requestURL = URL(string: jsonURL) else {
-                    completion(.failure(ExtractorError.invalidURL))
-                    return
-                }
-
-                var request = URLRequest(url: requestURL)
-                request.setValue("VideoFlow/3.0", forHTTPHeaderField: "User-Agent")
-
-                URLSession.shared.dataTask(with: request) { data, _, _ in
-                    guard let data = data,
-                          let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [Any],
-                          let firstPost = jsonArray.first as? [String: Any],
-                          let postData = firstPost["data"] as? [String: Any],
-                          let children = postData["children"] as? [[String: Any]],
-                          let post = children.first?["data"] as? [String: Any] else {
-                        completion(.failure(ExtractorError.noStreamsFound))
-                        return
+            // MARK: - Twitter via fxtwitter
+            private func twitterExtract(_ url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
+                let api = url.replacingOccurrences(of: "x.com", with: "api.fxtwitter.com").replacingOccurrences(of: "twitter.com", with: "api.fxtwitter.com")
+                guard let u = URL(string: api) else { completion(.failure(ExError.invalidURL)); return }
+                URLSession.shared.dataTask(with: u) { data, _, _ in
+                    guard let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let tw = j["tweet"] as? [String: Any] else { completion(.failure(ExError.noStreams)); return }
+                    var streams: [ExtractedStream] = []
+                    if let m = tw["media"] as? [String: Any], let vs = m["videos"] as? [[String: Any]] {
+                        for v in vs { if let vu = v["url"] as? String { streams.append(ExtractedStream(url: vu, quality: .p720, headers: [:], filename: nil, hasAudio: true)) } }
                     }
+                    let title = String((tw["text"] as? String ?? "Twitter Video").prefix(60))
+                    streams.isEmpty ? completion(.failure(ExError.noStreams)) : completion(.success(ExtractedVideo(title: title, streams: streams, thumbnail: nil, sourceType: .twitter)))
+                }.resume()
+            }
 
+            // MARK: - Reddit
+            private func redditExtract(_ url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
+                var jurl = url; if !jurl.hasSuffix(".json") { jurl += (jurl.hasSuffix("/") ? ".json" : "/.json") }
+                guard let u = URL(string: jurl) else { completion(.failure(ExError.invalidURL)); return }
+                var req = URLRequest(url: u); req.setValue("VideoFlow/4.0", forHTTPHeaderField: "User-Agent")
+                URLSession.shared.dataTask(with: req) { data, _, _ in
+                    guard let data = data, let arr = try? JSONSerialization.jsonObject(with: data) as? [Any],
+                          let first = arr.first as? [String: Any], let pd = first["data"] as? [String: Any],
+                          let ch = pd["children"] as? [[String: Any]], let post = ch.first?["data"] as? [String: Any] else { completion(.failure(ExError.noStreams)); return }
                     let title = post["title"] as? String ?? "Reddit Video"
-
-                    if let media = post["media"] as? [String: Any],
-                       let redditVideo = media["reddit_video"] as? [String: Any],
-                       let fallbackURL = redditVideo["fallback_url"] as? String {
-                        let stream = ExtractedStream(url: fallbackURL, quality: .p720, headers: [:], filename: nil, hasAudio: true)
-                        completion(.success(ExtractedVideo(
-                            title: title, streams: [stream], thumbnail: nil, sourceType: .reddit
-                        )))
-                        return
-                    }
-                    completion(.failure(ExtractorError.noStreamsFound))
+                    if let m = post["media"] as? [String: Any], let rv = m["reddit_video"] as? [String: Any], let fu = rv["fallback_url"] as? String {
+                        completion(.success(ExtractedVideo(title: title, streams: [ExtractedStream(url: fu, quality: .p720, headers: [:], filename: nil, hasAudio: true)], thumbnail: nil, sourceType: .reddit)))
+                    } else { completion(.failure(ExError.noStreams)) }
                 }.resume()
             }
-        }
 
-        // MARK: - HTML Scraper (Last Resort)
-        class HTMLScraper {
-            static func extract(url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                guard let pageURL = URL(string: url) else {
-                    completion(.failure(ExtractorError.invalidURL))
-                    return
-                }
-                var request = URLRequest(url: pageURL)
-                request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
-
-                URLSession.shared.dataTask(with: request) { data, _, _ in
-                    guard let data = data, let html = String(data: data, encoding: .utf8) else {
-                        completion(.failure(ExtractorError.allBackendsFailed("HTML fetch failed")))
-                        return
+            // MARK: - Instagram
+            private func instagramExtract(_ url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
+                guard let u = URL(string: url) else { completion(.failure(ExError.invalidURL)); return }
+                var req = URLRequest(url: u)
+                req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+                URLSession.shared.dataTask(with: req) { data, _, _ in
+                    guard let data = data, let html = String(data: data, encoding: .utf8) else { completion(.failure(ExError.noStreams)); return }
+                    for p in ["\"video_url\":\"([^\"]+)\"", "\"contentUrl\":\"([^\"]+\\.mp4[^\"]*)\"", "property=\"og:video\" content=\"([^\"]+)\""] {
+                        if let rx = try? NSRegularExpression(pattern: p), let m = rx.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)), let r = Range(m.range(at: 1), in: html) {
+                            var vu = String(html[r]).replacingOccurrences(of: "\\u0026", with: "&").replacingOccurrences(of: "\\/", with: "/")
+                            if vu.hasPrefix("http") {
+                                completion(.success(ExtractedVideo(title: "Instagram Video", streams: [ExtractedStream(url: vu, quality: .p720, headers: ["Referer": "https://www.instagram.com/"], filename: nil, hasAudio: true)], thumbnail: nil, sourceType: .instagram)))
+                                return
+                            }
+                        }
                     }
-                    var streams: [ExtractedStream] = []
-                    var seen = Set<String>()
+                    completion(.failure(ExError.noStreams))
+                }.resume()
+            }
 
-                    let patterns = [
-                        "https?://[^\\s\"'<>\\\\]+\\.mp4[^\\s\"'<>\\\\]*",
-                        "https?://[^\\s\"'<>\\\\]+\\.m3u8[^\\s\"'<>\\\\]*",
-                        "https?://[^\\s\"'<>\\\\]+\\.webm[^\\s\"'<>\\\\]*",
-                        "\"contentUrl\"\\s*:\\s*\"([^\"]+)\"",
-                        "\"videoUrl\"\\s*:\\s*\"([^\"]+)\"",
-                        "property=\"og:video\"\\s+content=\"([^\"]+)\"",
-                        "property=\"og:video:url\"\\s+content=\"([^\"]+)\""
-                    ]
+            // MARK: - Facebook
+            private func facebookExtract(_ url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
+                let mu = url.replacingOccurrences(of: "www.facebook.com", with: "m.facebook.com").replacingOccurrences(of: "web.facebook.com", with: "m.facebook.com")
+                guard let u = URL(string: mu) else { completion(.failure(ExError.invalidURL)); return }
+                var req = URLRequest(url: u); req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+                URLSession.shared.dataTask(with: req) { data, _, _ in
+                    guard let data = data, let html = String(data: data, encoding: .utf8) else { completion(.failure(ExError.noStreams)); return }
+                    var streams: [ExtractedStream] = []; let hdrs = ["Referer": "https://www.facebook.com/"]
+                    for (p, q) in [("hd_src\":\"([^\"]+)\"", VideoQuality.p1080), ("sd_src\":\"([^\"]+)\"", VideoQuality.p480), ("browser_native_hd_url\":\"([^\"]+)\"", VideoQuality.p720), ("browser_native_sd_url\":\"([^\"]+)\"", VideoQuality.p480)] {
+                        if let rx = try? NSRegularExpression(pattern: p), let m = rx.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)), let r = Range(m.range(at: 1), in: html) {
+                            let vu = String(html[r]).replacingOccurrences(of: "\\/", with: "/").replacingOccurrences(of: "\\u0025", with: "%").replacingOccurrences(of: "\\u0026", with: "&")
+                            if !streams.contains(where: { $0.quality == q }) { streams.append(ExtractedStream(url: vu, quality: q, headers: hdrs, filename: nil, hasAudio: true)) }
+                        }
+                    }
+                    streams.isEmpty ? completion(.failure(ExError.noStreams)) : completion(.success(ExtractedVideo(title: "Facebook Video", streams: streams, thumbnail: nil, sourceType: .facebook)))
+                }.resume()
+            }
 
-                    for pattern in patterns {
-                        if let regex = try? NSRegularExpression(pattern: pattern) {
-                            let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
-                            for match in matches.prefix(5) {
-                                let matchRange = match.numberOfRanges > 1 ? match.range(at: 1) : match.range
-                                if let range = Range(matchRange, in: html) {
-                                    var vURL = String(html[range])
-                                    vURL = vURL.replacingOccurrences(of: "\\/", with: "/")
-                                    vURL = vURL.replacingOccurrences(of: "\\u0026", with: "&")
-                                    if !seen.contains(vURL) && vURL.hasPrefix("http") {
-                                        seen.insert(vURL)
-                                        streams.append(ExtractedStream(url: vURL, quality: .p720, headers: [:], filename: nil, hasAudio: true))
-                                    }
+            // MARK: - Cobalt Chain
+            private func tryCobaltChain(url: String, quality: VideoQuality, audioOnly: Bool, idx: Int, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
+                guard idx < cobaltMirrors.count else { completion(.failure(ExError.allFailed("Cobalt"))); return }
+                cobaltRequest(mirror: cobaltMirrors[idx], videoURL: url, quality: quality.cobaltValue, audioOnly: audioOnly) { [weak self] r in
+                    switch r {
+                    case .success(let v): completion(.success(v))
+                    case .failure: self?.tryCobaltChain(url: url, quality: quality, audioOnly: audioOnly, idx: idx + 1, completion: completion)
+                    }
+                }
+            }
+
+            private func cobaltRequest(mirror: String, videoURL: String, quality: String, audioOnly: Bool, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
+                guard let api = URL(string: mirror) else { completion(.failure(ExError.invalidURL)); return }
+                var req = URLRequest(url: api); req.httpMethod = "POST"; req.timeoutInterval = 20
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                req.setValue("application/json", forHTTPHeaderField: "Accept")
+                req.setValue("VideoFlow/4.0", forHTTPHeaderField: "User-Agent")
+                let body: [String: Any] = ["url": videoURL, "videoQuality": quality, "audioFormat": "mp3", "audioBitrate": "320", "filenameStyle": "pretty", "downloadMode": audioOnly ? "audio" : "auto", "youtubeVideoCodec": "h264", "tiktokFullAudio": true, "tiktokH265": false, "twitterGif": true]
+                req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+                URLSession.shared.dataTask(with: req) { [weak self] data, _, error in
+                    if let error = error { completion(.failure(ExError.network(error.localizedDescription))); return }
+                    guard let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { completion(.failure(ExError.noStreams)); return }
+                    let site = self?.detectSite(videoURL) ?? .other
+
+                    if let st = j["status"] as? String {
+                        if ["tunnel", "redirect", "stream"].contains(st), let u = j["url"] as? String {
+                            let fn = j["filename"] as? String ?? "Video"
+                            let title = fn.replacingOccurrences(of: ".mp4", with: "").replacingOccurrences(of: ".mp3", with: "")
+                            completion(.success(ExtractedVideo(title: title, streams: [ExtractedStream(url: u, quality: .p1080, headers: [:], filename: fn, hasAudio: true)], thumbnail: nil, sourceType: site)))
+                        } else if st == "picker", let pk = j["picker"] as? [[String: Any]] {
+                            let ss = pk.compactMap { $0["url"] as? String }.map { ExtractedStream(url: $0, quality: .p720, headers: [:], filename: nil, hasAudio: true) }
+                            ss.isEmpty ? completion(.failure(ExError.noStreams)) : completion(.success(ExtractedVideo(title: "Media (\(ss.count))", streams: ss, thumbnail: nil, sourceType: site)))
+                        } else { completion(.failure(ExError.noStreams)) }
+                    } else if let u = j["url"] as? String {
+                        completion(.success(ExtractedVideo(title: j["filename"] as? String ?? "Video", streams: [ExtractedStream(url: u, quality: .p1080, headers: [:], filename: nil, hasAudio: true)], thumbnail: nil, sourceType: site)))
+                    } else { completion(.failure(ExError.noStreams)) }
+                }.resume()
+            }
+
+            // MARK: - HTML Scrape Fallback
+            private func htmlScrape(url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
+                guard let u = URL(string: url) else { completion(.failure(ExError.invalidURL)); return }
+                var req = URLRequest(url: u); req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+                URLSession.shared.dataTask(with: req) { data, _, _ in
+                    guard let data = data, let html = String(data: data, encoding: .utf8) else { completion(.failure(ExError.allFailed("fetch"))); return }
+                    var streams: [ExtractedStream] = []; var seen = Set<String>()
+                    for p in ["https?://[^\\s\"'<>\\\\]+\\.mp4[^\\s\"'<>\\\\]*", "https?://[^\\s\"'<>\\\\]+\\.m3u8[^\\s\"'<>\\\\]*", "\"contentUrl\"\\s*:\\s*\"([^\"]+)\"", "property=\"og:video\"\\s+content=\"([^\"]+)\"", "property=\"og:video:url\"\\s+content=\"([^\"]+)\""] {
+                        if let rx = try? NSRegularExpression(pattern: p) {
+                            for m in rx.matches(in: html, range: NSRange(html.startIndex..., in: html)).prefix(5) {
+                                let mr = m.numberOfRanges > 1 ? m.range(at: 1) : m.range
+                                if let r = Range(mr, in: html) {
+                                    var vu = String(html[r]).replacingOccurrences(of: "\\/", with: "/").replacingOccurrences(of: "\\u0026", with: "&")
+                                    if vu.hasPrefix("http") && !seen.contains(vu) { seen.insert(vu); streams.append(ExtractedStream(url: vu, quality: .p720, headers: [:], filename: nil, hasAudio: true)) }
                                 }
                             }
                         }
                     }
-
-                    // Try to extract title
                     var title = "Video"
-                    if let regex = try? NSRegularExpression(pattern: "<title>([^<]+)</title>"),
-                       let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-                       let range = Range(match.range(at: 1), in: html) {
-                        title = String(html[range])
-                    }
-
-                    if streams.isEmpty {
-                        completion(.failure(ExtractorError.allBackendsFailed("No videos in HTML")))
-                    } else {
-                        completion(.success(ExtractedVideo(
-                            title: title, streams: streams,
-                            thumbnail: nil, sourceType: .direct
-                        )))
-                    }
+                    if let rx = try? NSRegularExpression(pattern: "<title>([^<]+)</title>"), let m = rx.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)), let r = Range(m.range(at: 1), in: html) { title = String(html[r]) }
+                    streams.isEmpty ? completion(.failure(ExError.allFailed("No videos"))) : completion(.success(ExtractedVideo(title: title, streams: streams, thumbnail: nil, sourceType: .other)))
                 }.resume()
             }
         }
@@ -1238,58 +725,42 @@ jobs:
 
         struct ContentView: View {
             @State private var selectedTab = 0
-            @EnvironmentObject var downloadManager: DownloadManager
-            @EnvironmentObject var playerManager: PlayerManager
+            @EnvironmentObject var dm: DownloadManager
+            @EnvironmentObject var pm: PlayerManager
 
             var body: some View {
                 ZStack {
                     TabView(selection: $selectedTab) {
-                        BrowserView()
-                            .tabItem { Label("Browser", systemImage: "globe") }
-                            .tag(0)
-
-                        DownloadsView()
-                            .tabItem { Label("Downloads", systemImage: "arrow.down.circle.fill") }
-                            .tag(1)
-                            .badge(downloadManager.activeDownloads.count)
-
-                        LibraryView()
-                            .tabItem { Label("Library", systemImage: "play.rectangle.fill") }
-                            .tag(2)
-                            .badge(downloadManager.completedVideos.count)
-                    }
-                    .accentColor(.blue)
-
-                    if playerManager.isMinimized && playerManager.currentVideo != nil {
-                        VStack {
-                            Spacer()
-                            MiniPlayerView().padding(.bottom, 55)
-                        }
+                        BrowserView().tabItem { Label("Browser", systemImage: "globe") }.tag(0)
+                        DownloadsView().tabItem { Label("Downloads", systemImage: "arrow.down.circle.fill") }.tag(1).badge(dm.activeDownloads.count)
+                        LibraryView().tabItem { Label("Library", systemImage: "play.rectangle.fill") }.tag(2).badge(dm.completedVideos.count)
+                    }.accentColor(.blue)
+                    if pm.isMinimized && pm.currentVideo != nil {
+                        VStack { Spacer(); MiniPlayerView().padding(.bottom, 55) }
                     }
                 }
-                .sheet(isPresented: $playerManager.isFullScreen) {
-                    if let video = playerManager.currentVideo {
-                        PlayerView(video: video).environmentObject(playerManager)
-                    }
+                .sheet(isPresented: $pm.isFullScreen) {
+                    if let v = pm.currentVideo { PlayerView(video: v).environmentObject(pm) }
                 }
             }
         }
         SWIFTEOF
 
         # ============================================================
-        # FILE 9: BrowserView.swift (ULTIMATE with Quality Picker)
+        # FILE 9: BrowserView.swift (INTELLIGENT VIDEO CAPTURE)
         # ============================================================
         cat > VideoFlow/Views/BrowserView.swift << 'SWIFTEOF'
         import SwiftUI
         import WebKit
 
-        class BrowserViewModel: ObservableObject {
+        class BrowserVM: ObservableObject {
             @Published var urlText = ""
             @Published var isLoading = false
-            @Published var loadingProgress: Double = 0
             @Published var canGoBack = false
             @Published var canGoForward = false
             @Published var isSecure = true
+            @Published var capturedURLs: [String] = []
+            var networkCaptures = Set<String>()
             weak var webView: WKWebView?
 
             init() { navigate(to: "https://www.google.com") }
@@ -1297,39 +768,40 @@ jobs:
             func navigate(to raw: String) {
                 var s = raw.trimmingCharacters(in: .whitespaces)
                 if !s.hasPrefix("http://") && !s.hasPrefix("https://") {
-                    if s.contains(".") && !s.contains(" ") { s = "https://" + s }
-                    else {
-                        let encoded = s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s
-                        s = "https://www.google.com/search?q=" + encoded
-                    }
+                    if s.contains(".") && !s.contains(" ") { s = "https://\(s)" }
+                    else { s = "https://www.google.com/search?q=\(s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s)" }
                 }
                 guard let url = URL(string: s) else { return }
-                webView?.load(URLRequest(url: url))
-                urlText = s
+                webView?.load(URLRequest(url: url)); urlText = s
             }
 
-            func goBack()       { webView?.goBack() }
-            func goForward()    { webView?.goForward() }
-            func reload()       { webView?.reload() }
-            func stopLoading()  { webView?.stopLoading() }
+            func goBack() { webView?.goBack() }
+            func goForward() { webView?.goForward() }
+            func reload() { webView?.reload() }
+            func stop() { webView?.stopLoading() }
 
-            func shareCurrentPage() {
-                guard let url = webView?.url else { return }
-                let vc = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-                if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                   let root = scene.windows.first?.rootViewController {
-                    root.present(vc, animated: true)
-                }
+            func addCapture(_ url: String) {
+                guard !networkCaptures.contains(url) else { return }
+                networkCaptures.insert(url)
+                DispatchQueue.main.async { self.capturedURLs.append(url) }
             }
         }
 
-        struct WebViewRepresentable: UIViewRepresentable {
-            @ObservedObject var vm: BrowserViewModel
+        // MARK: - Smart WebView with Network Interception
+        struct SmartWebView: UIViewRepresentable {
+            @ObservedObject var vm: BrowserVM
 
             func makeUIView(context: Context) -> WKWebView {
                 let cfg = WKWebViewConfiguration()
                 cfg.allowsInlineMediaPlayback = true
                 cfg.mediaTypesRequiringUserActionForPlayback = []
+
+                // Inject intelligent video detection script
+                let js = WKUserScript(source: Self.smartDetectionJS, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
+                cfg.userContentController.addUserScript(js)
+                cfg.userContentController.add(context.coordinator, name: "videoCapture")
+
+                // URL scheme handler for network sniffing
                 let wv = WKWebView(frame: .zero, configuration: cfg)
                 wv.navigationDelegate = context.coordinator
                 wv.uiDelegate = context.coordinator
@@ -1342,40 +814,138 @@ jobs:
             func updateUIView(_ wv: WKWebView, context: Context) {}
             func makeCoordinator() -> Coordinator { Coordinator(vm: vm) }
 
-            class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
-                let vm: BrowserViewModel
-                init(vm: BrowserViewModel) { self.vm = vm }
+            // MARK: - Ultra Smart JS (detects videos everywhere)
+            static var smartDetectionJS: String { """
+            (function(){
+              var found=new Set();
+              function report(url,src){
+                if(url && !found.has(url) && (url.includes('.mp4')||url.includes('.m3u8')||url.includes('.webm')||url.includes('.mov')||url.includes('video')||url.includes('googlevideo')||url.includes('fbcdn.net')||url.includes('cdninstagram')||url.includes('tiktokcdn'))){
+                  found.add(url);
+                  window.webkit.messageHandlers.videoCapture.postMessage({url:url,source:src});
+                }
+              }
+
+              // 1. Scan <video> tags
+              function scanVideos(){
+                document.querySelectorAll('video').forEach(function(v){
+                  if(v.src) report(v.src,'video-tag');
+                  if(v.currentSrc) report(v.currentSrc,'video-currentSrc');
+                  v.querySelectorAll('source').forEach(function(s){ if(s.src) report(s.src,'source-tag'); });
+                  // Check blob URLs
+                  if(v.src && v.src.startsWith('blob:')){ try { report(v.src,'blob'); } catch(e){} }
+                });
+                // Scan iframes
+                try { document.querySelectorAll('iframe').forEach(function(f){ try { f.contentDocument.querySelectorAll('video').forEach(function(v){ if(v.src) report(v.src,'iframe-video'); }); } catch(e){} }); } catch(e){}
+              }
+
+              // 2. Intercept fetch
+              var oFetch=window.fetch;
+              window.fetch=function(){
+                var url=typeof arguments[0]==='string'?arguments[0]:(arguments[0]&&arguments[0].url?arguments[0].url:'');
+                report(url,'fetch');
+                return oFetch.apply(this,arguments);
+              };
+
+              // 3. Intercept XMLHttpRequest
+              var oXHR=XMLHttpRequest.prototype.open;
+              XMLHttpRequest.prototype.open=function(m,url){
+                report(url,'xhr');
+                return oXHR.apply(this,arguments);
+              };
+
+              // 4. Intercept createElement (catches dynamic video creation)
+              var oCE=document.createElement;
+              document.createElement=function(tag){
+                var el=oCE.apply(this,arguments);
+                if(tag.toLowerCase()==='video'||tag.toLowerCase()==='source'){
+                  var oSS=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'src');
+                  if(oSS&&oSS.set){
+                    var origSet=oSS.set;
+                    Object.defineProperty(el,'src',{set:function(v){report(v,'dynamic-'+tag);origSet.call(this,v);},get:oSS.get});
+                  }
+                }
+                return el;
+              };
+
+              // 5. MutationObserver for dynamic content
+              var obs=new MutationObserver(function(){ scanVideos(); });
+              if(document.body) obs.observe(document.body,{childList:true,subtree:true});
+
+              // 6. Intercept MediaSource
+              if(window.MediaSource){
+                var oAB=MediaSource.prototype.addSourceBuffer;
+                MediaSource.prototype.addSourceBuffer=function(m){
+                  window.webkit.messageHandlers.videoCapture.postMessage({url:'mediasource://'+m,source:'mediasource'});
+                  return oAB.apply(this,arguments);
+                };
+              }
+
+              // 7. Periodic scan
+              window._vfScan=scanVideos;
+              setInterval(scanVideos,3000);
+              setTimeout(scanVideos,1500);
+              setTimeout(scanVideos,5000);
+            })();
+            """ }
+
+            class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+                let vm: BrowserVM
+                init(vm: BrowserVM) { self.vm = vm }
+
+                func userContentController(_ c: WKUserContentController, didReceive msg: WKScriptMessage) {
+                    if let body = msg.body as? [String: Any], let url = body["url"] as? String {
+                        vm.addCapture(url)
+                    }
+                }
 
                 func webView(_ wv: WKWebView, didStartProvisionalNavigation _: WKNavigation!) {
-                    vm.isLoading = true
+                    vm.isLoading = true; vm.capturedURLs = []; vm.networkCaptures = []
                 }
 
                 func webView(_ wv: WKWebView, didFinish _: WKNavigation!) {
-                    vm.isLoading = false
-                    vm.canGoBack = wv.canGoBack; vm.canGoForward = wv.canGoForward
-                    vm.urlText = wv.url?.absoluteString ?? ""
-                    vm.isSecure = wv.url?.scheme == "https"
+                    vm.isLoading = false; vm.canGoBack = wv.canGoBack; vm.canGoForward = wv.canGoForward
+                    vm.urlText = wv.url?.absoluteString ?? ""; vm.isSecure = wv.url?.scheme == "https"
                 }
 
                 func webView(_ wv: WKWebView, didFail _: WKNavigation!, withError _: Error) { vm.isLoading = false }
 
-                func webView(_ wv: WKWebView, createWebViewWith _: WKWebViewConfiguration,
-                             for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-                    if action.targetFrame == nil { wv.load(action.request) }
-                    return nil
+                // Intercept ALL navigation requests to catch video URLs
+                func webView(_ wv: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                    if let url = action.request.url?.absoluteString {
+                        let lower = url.lowercased()
+                        if lower.contains(".mp4") || lower.contains(".m3u8") || lower.contains(".webm") || lower.contains("googlevideo") || lower.contains("videoplayback") {
+                            vm.addCapture(url)
+                        }
+                    }
+                    decisionHandler(.allow)
+                }
+
+                // Intercept response to detect video content types
+                func webView(_ wv: WKWebView, decidePolicyFor response: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+                    if let mime = response.response.mimeType?.lowercased(),
+                       (mime.contains("video") || mime.contains("mpegurl") || mime.contains("mp2t")) {
+                        if let url = response.response.url?.absoluteString { vm.addCapture(url) }
+                    }
+                    decisionHandler(.allow)
+                }
+
+                func webView(_ wv: WKWebView, createWebViewWith _: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+                    if action.targetFrame == nil { wv.load(action.request) }; return nil
                 }
             }
         }
 
+        // MARK: - Browser View
         struct BrowserView: View {
-            @StateObject private var vm = BrowserViewModel()
-            @EnvironmentObject var downloadManager: DownloadManager
+            @StateObject private var vm = BrowserVM()
+            @EnvironmentObject var dm: DownloadManager
             @State private var isExtracting = false
-            @State private var showQualityPicker = false
-            @State private var statusMessage: String?
-            @State private var showStatus = false
-            @State private var extractedVideo: ExtractedVideo?
-            @State private var showVideoSheet = false
+            @State private var showQuality = false
+            @State private var msg: String?
+            @State private var showMsg = false
+            @State private var showCaptured = false
+            @State private var extractResult: ExtractedVideo?
+            @State private var showStreams = false
 
             var body: some View {
                 NavigationView {
@@ -1383,222 +953,175 @@ jobs:
                         Color.black.ignoresSafeArea()
                         VStack(spacing: 0) {
                             addressBar
-                            if vm.isLoading {
-                                ProgressView(value: vm.loadingProgress)
-                                    .progressViewStyle(.linear).tint(.blue).frame(height:2)
-                            }
-                            WebViewRepresentable(vm: vm).ignoresSafeArea(edges: .bottom)
+                            if vm.isLoading { ProgressView().progressViewStyle(.linear).tint(.blue).frame(height: 2) }
+                            SmartWebView(vm: vm).ignoresSafeArea(edges: .bottom)
                             bottomBar
                         }
-
-                        if isExtracting {
-                            Color.black.opacity(0.7).ignoresSafeArea()
-                            VStack(spacing: 16) {
-                                ProgressView().tint(.white).scaleEffect(2)
-                                Text("Extracting video...")
-                                    .foregroundColor(.white).font(.headline)
-                                Text("Trying multiple servers...")
-                                    .foregroundColor(.gray).font(.caption)
-                            }
-                            .padding(30)
-                            .background(RoundedRectangle(cornerRadius:20).fill(Color(.systemGray6).opacity(0.95)))
-                        }
+                        if isExtracting { extractingOverlay }
                     }
                     .navigationBarHidden(true)
                 }
-                .confirmationDialog("Choose Download Quality", isPresented: $showQualityPicker, titleVisibility: .visible) {
-                    Button("🎬 Best Quality (Auto)") { extractAndDownload(.p1080) }
-                    Button("🎬 4K Ultra HD (2160p)") { extractAndDownload(.p2160) }
-                    Button("🎬 2K QHD (1440p)") { extractAndDownload(.p1440) }
-                    Button("🎬 Full HD (1080p)") { extractAndDownload(.p1080) }
-                    Button("🎬 HD (720p)") { extractAndDownload(.p720) }
-                    Button("🎬 SD (480p)") { extractAndDownload(.p480) }
-                    Button("🎬 Low (360p)") { extractAndDownload(.p360) }
-                    Button("🎵 Audio Only (MP3)") { extractAndDownload(.audio, audioOnly: true) }
+                .confirmationDialog("Download Quality", isPresented: $showQuality, titleVisibility: .visible) {
+                    Button("Best (Auto)") { doExtract(.p1080) }
+                    Button("4K (2160p)") { doExtract(.p2160) }
+                    Button("1440p QHD") { doExtract(.p1440) }
+                    Button("1080p Full HD") { doExtract(.p1080) }
+                    Button("720p HD") { doExtract(.p720) }
+                    Button("480p SD") { doExtract(.p480) }
+                    Button("360p Low") { doExtract(.p360) }
+                    Button("Audio MP3") { doExtract(.audio, audio: true) }
                     Button("Cancel", role: .cancel) {}
                 }
-                .alert("Status", isPresented: $showStatus) {
-                    Button("OK") {}
-                } message: {
-                    Text(statusMessage ?? "")
-                }
-                .sheet(isPresented: $showVideoSheet) {
-                    if let extracted = extractedVideo {
-                        MultiStreamSheet(video: extracted) { stream, quality in
-                            downloadStream(stream: stream, quality: quality, title: extracted.title, sourceType: extracted.sourceType)
-                        }
-                    }
+                .alert("VideoFlow", isPresented: $showMsg) { Button("OK") {} } message: { Text(msg ?? "") }
+                .sheet(isPresented: $showCaptured) { CapturedSheet(urls: vm.capturedURLs, dm: dm) }
+                .sheet(isPresented: $showStreams) {
+                    if let r = extractResult { StreamsSheet(video: r) { s, q in downloadStream(s, q, r) } }
                 }
             }
 
-            private var addressBar: some View {
+            var addressBar: some View {
                 HStack(spacing: 8) {
                     HStack(spacing: 6) {
-                        Image(systemName: vm.isSecure ? "lock.fill" : "lock.open.fill")
-                            .foregroundColor(vm.isSecure ? .green : .orange).font(.system(size:12))
-                        TextField("Search or URL...", text: $vm.urlText)
-                            .foregroundColor(.white).font(.system(size:14))
-                            .keyboardType(.URL).autocapitalization(.none).disableAutocorrection(true)
-                            .onSubmit { vm.navigate(to: vm.urlText) }
-                        if !vm.urlText.isEmpty {
-                            Button { vm.urlText = "" } label: {
-                                Image(systemName:"xmark.circle.fill").foregroundColor(.gray).font(.system(size:14))
-                            }
-                        }
-                    }
-                    .padding(.horizontal,10).padding(.vertical,8)
-                    .background(Color.white.opacity(0.1)).cornerRadius(10)
-                    Button { vm.navigate(to: vm.urlText) } label: {
-                        Text("Go").foregroundColor(.blue).font(.system(size:14,weight:.semibold))
-                    }
-                }
-                .padding(.horizontal,12).padding(.vertical,8)
+                        Image(systemName: vm.isSecure ? "lock.fill" : "lock.open.fill").foregroundColor(vm.isSecure ? .green : .orange).font(.system(size: 12))
+                        TextField("Search or URL...", text: $vm.urlText).foregroundColor(.white).font(.system(size: 14)).keyboardType(.URL).autocapitalization(.none).disableAutocorrection(true).onSubmit { vm.navigate(to: vm.urlText) }
+                        if !vm.urlText.isEmpty { Button { vm.urlText = "" } label: { Image(systemName: "xmark.circle.fill").foregroundColor(.gray).font(.system(size: 14)) } }
+                    }.padding(.horizontal, 10).padding(.vertical, 8).background(Color.white.opacity(0.1)).cornerRadius(10)
+                    Button { vm.navigate(to: vm.urlText) } label: { Text("Go").foregroundColor(.blue).font(.system(size: 14, weight: .semibold)) }
+                }.padding(.horizontal, 12).padding(.vertical, 8)
             }
 
-            private var bottomBar: some View {
+            var bottomBar: some View {
                 HStack(spacing: 4) {
-                    barBtn("chevron.left", enabled: vm.canGoBack)  { vm.goBack() }
-                    barBtn("chevron.right", enabled: vm.canGoForward) { vm.goForward() }
-                    barBtn(vm.isLoading ? "xmark" : "arrow.clockwise", enabled: true) {
-                        vm.isLoading ? vm.stopLoading() : vm.reload()
-                    }
+                    bBtn("chevron.left", on: vm.canGoBack) { vm.goBack() }
+                    bBtn("chevron.right", on: vm.canGoForward) { vm.goForward() }
+                    bBtn(vm.isLoading ? "xmark" : "arrow.clockwise", on: true) { vm.isLoading ? vm.stop() : vm.reload() }
                     Spacer()
-                    Button {
-                        showQualityPicker = true
-                    } label: {
-                        HStack(spacing:5) {
-                            Image(systemName:"arrow.down.circle.fill").font(.system(size:16))
-                            Text("Download")
-                                .font(.system(size:13,weight:.bold))
+                    // Captured count badge
+                    if !vm.capturedURLs.isEmpty {
+                        Button { showCaptured = true } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "antenna.radiowaves.left.and.right").font(.system(size: 12))
+                                Text("\(vm.capturedURLs.count)").font(.system(size: 11, weight: .bold))
+                            }.foregroundColor(.white).padding(.horizontal, 8).padding(.vertical, 6).background(Color.green).cornerRadius(14)
                         }
-                        .foregroundColor(.white)
-                        .padding(.horizontal,14).padding(.vertical,9)
-                        .background(
-                            LinearGradient(colors:[.red,.orange], startPoint:.leading, endPoint:.trailing)
-                        )
-                        .cornerRadius(20)
-                        .shadow(color: .red.opacity(0.5), radius: 5)
                     }
-                    .disabled(isExtracting)
+                    // Download button
+                    Button { showQuality = true } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.down.circle.fill").font(.system(size: 15))
+                            Text("Download").font(.system(size: 12, weight: .bold))
+                        }.foregroundColor(.white).padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(LinearGradient(colors: [.red, .orange], startPoint: .leading, endPoint: .trailing)).cornerRadius(18)
+                    }.disabled(isExtracting)
                     Spacer()
-                    barBtn("house.fill", enabled: true) { vm.navigate(to:"https://www.google.com") }
-                    barBtn("square.and.arrow.up", enabled: true) { vm.shareCurrentPage() }
-                }
-                .padding(.horizontal,12).padding(.vertical,8)
-                .background(Color.white.opacity(0.05))
+                    bBtn("house.fill", on: true) { vm.navigate(to: "https://www.google.com") }
+                    bBtn("square.and.arrow.up", on: true) { shareURL() }
+                }.padding(.horizontal, 12).padding(.vertical, 8).background(Color.white.opacity(0.05))
             }
 
-            private func barBtn(_ icon: String, enabled: Bool, action: @escaping ()->Void) -> some View {
-                Button(action: action) {
-                    Image(systemName:icon).font(.system(size:18))
-                        .foregroundColor(enabled ? .white : .gray.opacity(0.3))
-                        .frame(width:40,height:40)
-                }.disabled(!enabled)
+            var extractingOverlay: some View {
+                Color.black.opacity(0.7).ignoresSafeArea().overlay(
+                    VStack(spacing: 14) {
+                        ProgressView().tint(.white).scaleEffect(1.8)
+                        Text("Extracting Video...").foregroundColor(.white).font(.headline)
+                        Text("Trying multiple servers").foregroundColor(.gray).font(.caption)
+                    }.padding(30).background(RoundedRectangle(cornerRadius: 18).fill(Color(.systemGray6).opacity(0.95)))
+                )
             }
 
-            private func extractAndDownload(_ quality: VideoQuality, audioOnly: Bool = false) {
-                guard let currentURL = vm.webView?.url?.absoluteString else {
-                    statusMessage = "No URL to extract"
-                    showStatus = true
-                    return
-                }
+            func bBtn(_ icon: String, on: Bool, action: @escaping () -> Void) -> some View {
+                Button(action: action) { Image(systemName: icon).font(.system(size: 18)).foregroundColor(on ? .white : .gray.opacity(0.3)).frame(width: 38, height: 38) }.disabled(!on)
+            }
+
+            func doExtract(_ q: VideoQuality, audio: Bool = false) {
+                guard let url = vm.webView?.url?.absoluteString else { msg = "No URL"; showMsg = true; return }
                 isExtracting = true
-
-                UltimateExtractor.shared.extract(
-                    from: currentURL, quality: quality, audioOnly: audioOnly
-                ) { result in
+                UltimateExtractor.shared.extract(from: url, quality: q, audioOnly: audio) { r in
                     DispatchQueue.main.async {
                         isExtracting = false
-                        switch result {
-                        case .success(let extracted):
-                            if extracted.streams.count == 1 {
-                                // Single stream - download directly
-                                let stream = extracted.streams[0]
-                                downloadStream(stream: stream, quality: quality,
-                                               title: extracted.title, sourceType: extracted.sourceType)
-                                statusMessage = "✅ Download started!\n\(extracted.title)"
-                                showStatus = true
-                            } else {
-                                // Multiple streams - show picker
-                                extractedVideo = extracted
-                                showVideoSheet = true
-                            }
-                        case .failure(let error):
-                            statusMessage = "❌ Failed: \(error.localizedDescription)\n\nTry:\n• Different quality\n• Copy video URL directly\n• Wait and retry"
-                            showStatus = true
+                        switch r {
+                        case .success(let v):
+                            if v.streams.count == 1 {
+                                downloadStream(v.streams[0], q, v)
+                                msg = "✅ Download started!\n\(v.title)"; showMsg = true
+                            } else { extractResult = v; showStreams = true }
+                        case .failure(let e):
+                            if !vm.capturedURLs.isEmpty {
+                                msg = "⚠️ Extraction failed but \(vm.capturedURLs.count) video(s) captured from browser.\nTap the green badge to download them."
+                            } else { msg = "❌ \(e.localizedDescription)\n\nTips:\n• Play the video first\n• Try different quality\n• Check the green capture badge" }
+                            showMsg = true
                         }
                     }
                 }
             }
 
-            private func downloadStream(stream: ExtractedStream, quality: VideoQuality,
-                                        title: String, sourceType: VideoSourceType) {
-                let video = VideoItem(
-                    id: UUID().uuidString,
-                    title: title,
-                    url: stream.url,
-                    thumbnailURL: nil,
-                    duration: nil,
-                    estimatedSize: nil,
-                    availableQualities: [quality],
-                    sourceType: sourceType,
-                    headers: stream.headers
-                )
-                downloadManager.startDownload(video: video, quality: quality)
+            func downloadStream(_ s: ExtractedStream, _ q: VideoQuality, _ v: ExtractedVideo) {
+                let video = VideoItem(id: UUID().uuidString, title: v.title, url: s.url, thumbnailURL: v.thumbnail, availableQualities: [q], sourceType: v.sourceType, headers: s.headers)
+                dm.startDownload(video: video, quality: q)
+            }
+
+            func shareURL() {
+                guard let url = vm.webView?.url else { return }
+                let vc = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+                if let sc = UIApplication.shared.connectedScenes.first as? UIWindowScene, let root = sc.windows.first?.rootViewController { root.present(vc, animated: true) }
             }
         }
 
-        // MARK: - Multi Stream Picker Sheet
-        struct MultiStreamSheet: View {
-            let video: ExtractedVideo
-            let onSelect: (ExtractedStream, VideoQuality) -> Void
+        // MARK: - Captured URLs Sheet
+        struct CapturedSheet: View {
+            let urls: [String]; let dm: DownloadManager
             @Environment(\.dismiss) var dismiss
-
             var body: some View {
                 NavigationView {
                     List {
-                        Section {
-                            HStack {
-                                Image(systemName: "info.circle.fill").foregroundColor(.blue)
-                                Text(video.title).font(.system(size: 14, weight: .medium)).lineLimit(2)
+                        Section("Captured from browser (\(urls.count))") {
+                            ForEach(urls, id: \.self) { url in
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(url.contains("googlevideo") ? "YouTube Stream" : url.contains(".m3u8") ? "HLS Stream" : "Video").font(.system(size: 13, weight: .medium))
+                                        Text(String(url.prefix(80))).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(2)
+                                    }
+                                    Spacer()
+                                    Button {
+                                        let v = VideoItem(id: UUID().uuidString, title: "Captured Video", url: url, availableQualities: [.p720], sourceType: url.contains(".m3u8") ? .hls : .direct)
+                                        dm.startDownload(video: v, quality: .p720); dismiss()
+                                    } label: { Image(systemName: "arrow.down.circle.fill").font(.system(size: 26)).foregroundColor(.blue) }
+                                }
                             }
                         }
-                        Section("Available Streams (\(video.streams.count))") {
-                            ForEach(Array(video.streams.enumerated()), id: \.offset) { idx, stream in
-                                Button {
-                                    onSelect(stream, stream.quality)
-                                    dismiss()
-                                } label: {
+                    }
+                    .navigationTitle("Captured Videos").navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() } } }
+                }
+            }
+        }
+
+        // MARK: - Streams Sheet
+        struct StreamsSheet: View {
+            let video: ExtractedVideo; let onSelect: (ExtractedStream, VideoQuality) -> Void
+            @Environment(\.dismiss) var dismiss
+            var body: some View {
+                NavigationView {
+                    List {
+                        Section { HStack { Image(systemName: "info.circle.fill").foregroundColor(.blue); Text(video.title).font(.system(size: 14, weight: .medium)).lineLimit(2) } }
+                        Section("Streams (\(video.streams.count))") {
+                            ForEach(Array(video.streams.enumerated()), id: \.offset) { i, s in
+                                Button { onSelect(s, s.quality); dismiss() } label: {
                                     HStack {
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            Text(stream.quality.displayName)
-                                                .font(.system(size: 15, weight: .semibold))
-                                                .foregroundColor(.primary)
-                                            if let fn = stream.filename {
-                                                Text(fn).font(.caption).foregroundColor(.secondary)
-                                            }
-                                            Text(stream.hasAudio ? "🔊 Video + Audio" : "🎬 Video Only")
-                                                .font(.caption2).foregroundColor(.blue)
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(s.quality.displayName).font(.system(size: 15, weight: .semibold)).foregroundColor(.primary)
+                                            Text(s.hasAudio ? "Video + Audio" : "Video Only").font(.caption).foregroundColor(.blue)
                                         }
                                         Spacer()
-                                        Text(stream.quality.rawValue)
-                                            .font(.system(size:11,weight:.bold))
-                                            .foregroundColor(.white).padding(.horizontal,10).padding(.vertical,4)
-                                            .background(stream.quality.color).cornerRadius(6)
-                                        Image(systemName:"arrow.down.circle.fill")
-                                            .foregroundColor(.blue).font(.system(size:22))
+                                        Text(s.quality.rawValue).font(.system(size: 11, weight: .bold)).foregroundColor(.white).padding(.horizontal, 8).padding(.vertical, 3).background(s.quality.color).cornerRadius(6)
+                                        Image(systemName: "arrow.down.circle.fill").foregroundColor(.blue).font(.system(size: 22))
                                     }
                                 }
                             }
                         }
                     }
-                    .navigationTitle("Choose Stream")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement:.navigationBarTrailing) {
-                            Button("Cancel") { dismiss() }
-                        }
-                    }
+                    .navigationTitle("Choose Stream").navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Cancel") { dismiss() } } }
                 }
             }
         }
@@ -1611,132 +1134,81 @@ jobs:
         import SwiftUI
 
         struct DownloadsView: View {
-            @EnvironmentObject var downloadManager: DownloadManager
-            @EnvironmentObject var playerManager: PlayerManager
+            @EnvironmentObject var dm: DownloadManager
+            @EnvironmentObject var pm: PlayerManager
             @State private var tab = 0
-
             var body: some View {
                 NavigationView {
-                    VStack(spacing:0) {
-                        Picker("", selection:$tab) {
-                            Text("Active (\(downloadManager.activeDownloads.count))").tag(0)
-                            Text("Done (\(downloadManager.completedVideos.count))").tag(1)
+                    VStack(spacing: 0) {
+                        Picker("", selection: $tab) {
+                            Text("Active (\(dm.activeDownloads.count))").tag(0)
+                            Text("Done (\(dm.completedVideos.count))").tag(1)
                         }.pickerStyle(.segmented).padding()
-
                         if tab == 0 {
-                            if downloadManager.activeDownloads.isEmpty {
-                                EmptyState(icon:"arrow.down.circle", title:"No Active Downloads",
-                                           sub:"Browse and tap Download button")
-                            } else {
-                                List(downloadManager.activeDownloads) { task in
-                                    ActiveRow(task:task,
-                                        onPause: { downloadManager.pauseDownload(task) },
-                                        onResume: { downloadManager.resumeDownload(task) },
-                                        onCancel: { downloadManager.cancelDownload(task) })
-                                }.listStyle(.plain)
-                            }
+                            if dm.activeDownloads.isEmpty { EmptyV(icon: "arrow.down.circle", t: "No Downloads", s: "Tap Download in browser") }
+                            else { List(dm.activeDownloads) { t in ActiveRow(task: t, onP: { dm.pauseDownload(t) }, onR: { dm.resumeDownload(t) }, onC: { dm.cancelDownload(t) }) }.listStyle(.plain) }
                         } else {
-                            if downloadManager.completedVideos.isEmpty {
-                                EmptyState(icon:"checkmark.circle", title:"No Completed Videos",
-                                           sub:"Downloads will appear here")
-                            } else {
-                                List(downloadManager.completedVideos) { task in
-                                    DoneRow(task:task,
-                                        onPlay: { playerManager.playVideo(task) },
-                                        onDelete: { downloadManager.deleteVideo(task) })
-                                }.listStyle(.plain)
-                            }
+                            if dm.completedVideos.isEmpty { EmptyV(icon: "checkmark.circle", t: "No Videos", s: "Downloads appear here") }
+                            else { List(dm.completedVideos) { t in DoneRow(task: t, onPlay: { pm.playVideo(t) }, onDel: { dm.deleteVideo(t) }) }.listStyle(.plain) }
                         }
-                    }
-                    .navigationTitle("Downloads")
+                    }.navigationTitle("Downloads")
                 }
             }
         }
 
         struct ActiveRow: View {
-            @ObservedObject var task: DownloadTask
-            let onPause: ()->Void; let onResume: ()->Void; let onCancel: ()->Void
+            @ObservedObject var task: DownloadTask; let onP: () -> Void; let onR: () -> Void; let onC: () -> Void
             var body: some View {
-                VStack(alignment:.leading,spacing:8) {
+                VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        VStack(alignment:.leading,spacing:4) {
-                            Text(task.video.title).font(.system(size:14,weight:.medium)).lineLimit(2)
-                            HStack(spacing:6) {
-                                Text(task.quality.rawValue).font(.caption).foregroundColor(.white)
-                                    .padding(.horizontal,6).padding(.vertical,2)
-                                    .background(task.quality.color).cornerRadius(4)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(task.video.title).font(.system(size: 14, weight: .medium)).lineLimit(2)
+                            HStack(spacing: 6) {
+                                Text(task.quality.rawValue).font(.caption).foregroundColor(.white).padding(.horizontal, 6).padding(.vertical, 2).background(task.quality.color).cornerRadius(4)
                                 Text(task.status.displayText).font(.caption).foregroundColor(.secondary)
-                                if !task.speed.isEmpty { Text("• \(task.speed)").font(.caption).foregroundColor(.blue) }
+                                if !task.speed.isEmpty { Text(task.speed).font(.caption).foregroundColor(.blue) }
                             }
                             Text(task.sizeText).font(.caption2).foregroundColor(.secondary)
                         }
                         Spacer()
-                        HStack(spacing:10) {
-                            if case .paused = task.status {
-                                Button(action:onResume) {
-                                    Image(systemName:"play.circle.fill").font(.system(size:28)).foregroundColor(.green)
-                                }
-                            } else {
-                                Button(action:onPause) {
-                                    Image(systemName:"pause.circle.fill").font(.system(size:28)).foregroundColor(.orange)
-                                }
-                            }
-                            Button(action:onCancel) {
-                                Image(systemName:"xmark.circle.fill").font(.system(size:28)).foregroundColor(.red)
-                            }
+                        HStack(spacing: 8) {
+                            if case .paused = task.status { Button(action: onR) { Image(systemName: "play.circle.fill").font(.system(size: 28)).foregroundColor(.green) } }
+                            else { Button(action: onP) { Image(systemName: "pause.circle.fill").font(.system(size: 28)).foregroundColor(.orange) } }
+                            Button(action: onC) { Image(systemName: "xmark.circle.fill").font(.system(size: 28)).foregroundColor(.red) }
                         }
                     }
                     GeometryReader { g in
-                        ZStack(alignment:.leading) {
-                            RoundedRectangle(cornerRadius:4).fill(Color(.systemGray5)).frame(height:6)
-                            RoundedRectangle(cornerRadius:4).fill(Color.blue)
-                                .frame(width:g.size.width*task.progress,height:6)
-                                .animation(.linear(duration:0.3),value:task.progress)
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 3).fill(Color(.systemGray5)).frame(height: 5)
+                            RoundedRectangle(cornerRadius: 3).fill(Color.blue).frame(width: g.size.width * task.progress, height: 5).animation(.linear(duration: 0.3), value: task.progress)
                         }
-                    }.frame(height:6)
-                }.padding(.vertical,8)
+                    }.frame(height: 5)
+                }.padding(.vertical, 6)
             }
         }
 
         struct DoneRow: View {
-            let task: DownloadTask; let onPlay: ()->Void; let onDelete: ()->Void
+            let task: DownloadTask; let onPlay: () -> Void; let onDel: () -> Void
             var body: some View {
-                HStack(spacing:12) {
-                    Button(action:onPlay) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius:8).fill(Color.blue.opacity(0.2)).frame(width:80,height:50)
-                            Image(systemName:"play.circle.fill").foregroundColor(.blue).font(.system(size:28))
-                        }
-                    }
-                    VStack(alignment:.leading,spacing:4) {
-                        Text(task.video.title).font(.system(size:14,weight:.medium)).lineLimit(2)
-                        HStack(spacing:6) {
-                            Text(task.quality.rawValue).font(.caption).foregroundColor(.white)
-                                .padding(.horizontal,6).padding(.vertical,2)
-                                .background(task.quality.color).cornerRadius(4)
-                        }
+                HStack(spacing: 12) {
+                    Button(action: onPlay) { ZStack { RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.2)).frame(width: 75, height: 48); Image(systemName: "play.circle.fill").foregroundColor(.blue).font(.system(size: 26)) } }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(task.video.title).font(.system(size: 14, weight: .medium)).lineLimit(2)
+                        Text(task.quality.rawValue).font(.caption).foregroundColor(.white).padding(.horizontal, 6).padding(.vertical, 2).background(task.quality.color).cornerRadius(4)
                     }
                     Spacer()
-                    VStack(spacing:8) {
-                        if let url = task.savedURL { ShareLink(item:url) {
-                            Image(systemName:"square.and.arrow.up").foregroundColor(.blue)
-                        }}
-                        Button(action:onDelete) {
-                            Image(systemName:"trash.fill").foregroundColor(.red)
-                        }
+                    VStack(spacing: 8) {
+                        if let u = task.savedURL { ShareLink(item: u) { Image(systemName: "square.and.arrow.up").foregroundColor(.blue) } }
+                        Button(action: onDel) { Image(systemName: "trash.fill").foregroundColor(.red) }
                     }
-                }.padding(.vertical,6)
+                }.padding(.vertical, 4)
             }
         }
 
-        struct EmptyState: View {
-            let icon,title,sub: String
+        struct EmptyV: View {
+            let icon, t, s: String
             var body: some View {
-                VStack(spacing:16) {
-                    Image(systemName:icon).font(.system(size:55)).foregroundColor(.gray.opacity(0.5))
-                    Text(title).font(.title3).fontWeight(.semibold)
-                    Text(sub).font(.subheadline).foregroundColor(.secondary).multilineTextAlignment(.center)
-                }.frame(maxWidth:.infinity,maxHeight:.infinity)
+                VStack(spacing: 14) { Image(systemName: icon).font(.system(size: 50)).foregroundColor(.gray.opacity(0.5)); Text(t).font(.title3).fontWeight(.semibold); Text(s).font(.subheadline).foregroundColor(.secondary) }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         SWIFTEOF
@@ -1751,232 +1223,110 @@ jobs:
 
         struct PlayerView: View {
             let video: DownloadTask
-            @EnvironmentObject var playerManager: PlayerManager
-            @State private var showControls = true
+            @EnvironmentObject var pm: PlayerManager
+            @State private var showCtrl = true
             @State private var timer: Timer?
-            @State private var showSpeed = false
+            @State private var showSpd = false
             @State private var brightness = UIScreen.main.brightness
 
             var body: some View {
                 ZStack {
                     Color.black.ignoresSafeArea()
-                    if let p = playerManager.player {
-                        VideoPlayerLayer(player: p)
-                            .ignoresSafeArea()
-                            .onTapGesture { toggleControls() }
+                    if let p = pm.player { VPLayer(player: p).ignoresSafeArea().onTapGesture { toggle() } }
+                    if pm.isLoading { ProgressView().tint(.white).scaleEffect(2) }
+                    HStack(spacing: 0) {
+                        Color.clear.contentShape(Rectangle()).onTapGesture(count: 2) { pm.skipBackward(10) }
+                        Color.clear.contentShape(Rectangle()).onTapGesture { toggle() }
+                        Color.clear.contentShape(Rectangle()).onTapGesture(count: 2) { pm.skipForward(10) }
                     }
-                    if playerManager.isLoading {
-                        ProgressView().tint(.white).scaleEffect(2)
-                    }
-                    HStack(spacing:0) {
-                        Color.clear.contentShape(Rectangle())
-                            .onTapGesture(count:2) { playerManager.skipBackward(10); resetTimer() }
-                        Color.clear.contentShape(Rectangle())
-                            .onTapGesture { toggleControls() }
-                        Color.clear.contentShape(Rectangle())
-                            .onTapGesture(count:2) { playerManager.skipForward(10); resetTimer() }
-                    }
-                    if showControls { controls }
+                    if showCtrl { ctrlOverlay }
                 }
-                .onAppear { playerManager.playVideo(video); startTimer() }
-                .gesture(DragGesture().onChanged { val in
-                    let x = val.startLocation.x
-                    let w = UIScreen.main.bounds.width
-                    let delta = val.translation.height / 500
-                    if x < w/2 {
-                        brightness = max(0,min(1,brightness - delta))
-                        UIScreen.main.brightness = brightness
-                    } else {
-                        playerManager.setVolume(max(0,min(1, playerManager.volume - Float(delta))))
-                    }
+                .onAppear { pm.playVideo(video); startT() }
+                .gesture(DragGesture().onChanged { v in
+                    let d = v.translation.height / 500
+                    if v.startLocation.x < UIScreen.main.bounds.width / 2 { brightness = max(0, min(1, brightness - d)); UIScreen.main.brightness = brightness }
+                    else { pm.setVolume(max(0, min(1, pm.volume - Float(d)))) }
                 })
-                .sheet(isPresented:$showSpeed) {
-                    SpeedPicker().environmentObject(playerManager).presentationDetents([.height(320)])
-                }
+                .sheet(isPresented: $showSpd) { SpdPicker().environmentObject(pm).presentationDetents([.height(300)]) }
             }
 
-            var controls: some View {
+            var ctrlOverlay: some View {
                 VStack {
                     HStack {
-                        Button { playerManager.close() } label: {
-                            Image(systemName:"xmark").font(.system(size:17,weight:.bold))
-                                .foregroundColor(.white).padding(10)
-                                .background(Color.black.opacity(0.5)).clipShape(Circle())
-                        }
+                        Button { pm.close() } label: { Image(systemName: "xmark").font(.system(size: 16, weight: .bold)).foregroundColor(.white).padding(10).background(Color.black.opacity(0.5)).clipShape(Circle()) }
                         Spacer()
-                        Text(playerManager.currentVideo?.video.title ?? "")
-                            .foregroundColor(.white).font(.system(size:13,weight:.medium))
-                            .lineLimit(1).frame(maxWidth:200)
+                        Text(pm.currentVideo?.video.title ?? "").foregroundColor(.white).font(.system(size: 13, weight: .medium)).lineLimit(1).frame(maxWidth: 200)
                         Spacer()
-                        HStack(spacing:10) {
-                            Button { showSpeed = true } label: {
-                                Text(String(format:"%.1fx",playerManager.playbackSpeed))
-                                    .foregroundColor(.white).font(.system(size:13,weight:.bold))
-                                    .padding(.horizontal,8).padding(.vertical,4)
-                                    .background(Color.black.opacity(0.5)).cornerRadius(6)
-                            }
-                            Button { playerManager.minimize() } label: {
-                                Image(systemName:"pip.enter").font(.system(size:17))
-                                    .foregroundColor(.white).padding(10)
-                                    .background(Color.black.opacity(0.5)).clipShape(Circle())
-                            }
+                        HStack(spacing: 8) {
+                            Button { showSpd = true } label: { Text(String(format: "%.1fx", pm.playbackSpeed)).foregroundColor(.white).font(.system(size: 12, weight: .bold)).padding(.horizontal, 7).padding(.vertical, 3).background(Color.black.opacity(0.5)).cornerRadius(5) }
+                            Button { pm.minimize() } label: { Image(systemName: "pip.enter").font(.system(size: 16)).foregroundColor(.white).padding(10).background(Color.black.opacity(0.5)).clipShape(Circle()) }
                         }
-                    }.padding(.horizontal,20).padding(.top,20)
-
+                    }.padding(.horizontal, 18).padding(.top, 18)
                     Spacer()
-
-                    HStack(spacing:32) {
-                        Button { playerManager.skipBackward(30) } label: {
-                            Image(systemName:"gobackward.30").font(.system(size:28)).foregroundColor(.white)
-                        }
-                        Button { playerManager.skipBackward(10) } label: {
-                            Image(systemName:"gobackward.10").font(.system(size:34)).foregroundColor(.white)
-                        }
-                        Button { playerManager.togglePlayPause() } label: {
-                            Image(systemName: playerManager.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                                .font(.system(size:65)).foregroundColor(.white)
-                                .shadow(color:.black.opacity(0.5),radius:5)
-                        }
-                        Button { playerManager.skipForward(10) } label: {
-                            Image(systemName:"goforward.10").font(.system(size:34)).foregroundColor(.white)
-                        }
-                        Button { playerManager.skipForward(30) } label: {
-                            Image(systemName:"goforward.30").font(.system(size:28)).foregroundColor(.white)
-                        }
+                    HStack(spacing: 30) {
+                        Button { pm.skipBackward(30) } label: { Image(systemName: "gobackward.30").font(.system(size: 26)).foregroundColor(.white) }
+                        Button { pm.skipBackward(10) } label: { Image(systemName: "gobackward.10").font(.system(size: 32)).foregroundColor(.white) }
+                        Button { pm.togglePlayPause() } label: { Image(systemName: pm.isPlaying ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 60)).foregroundColor(.white) }
+                        Button { pm.skipForward(10) } label: { Image(systemName: "goforward.10").font(.system(size: 32)).foregroundColor(.white) }
+                        Button { pm.skipForward(30) } label: { Image(systemName: "goforward.30").font(.system(size: 26)).foregroundColor(.white) }
                     }
-
                     Spacer()
-
-                    VStack(spacing:10) {
-                        VStack(spacing:4) {
-                            Slider(
-                                value: Binding(get:{ playerManager.currentTime },
-                                               set:{ playerManager.seek(to:$0) }),
-                                in: 0...max(playerManager.duration,1)
-                            ).accentColor(.white)
-                            HStack {
-                                Text(playerManager.formattedTime(playerManager.currentTime))
-                                    .font(.caption).foregroundColor(.white.opacity(0.8))
-                                Spacer()
-                                Text(playerManager.formattedTime(playerManager.duration))
-                                    .font(.caption).foregroundColor(.white.opacity(0.8))
-                            }
+                    VStack(spacing: 8) {
+                        Slider(value: Binding(get: { pm.currentTime }, set: { pm.seek(to: $0) }), in: 0...max(pm.duration, 1)).accentColor(.white)
+                        HStack { Text(pm.fmt(pm.currentTime)).font(.caption).foregroundColor(.white.opacity(0.8)); Spacer(); Text(pm.fmt(pm.duration)).font(.caption).foregroundColor(.white.opacity(0.8)) }
+                        HStack(spacing: 8) {
+                            Button { pm.isMuted.toggle(); pm.player?.isMuted = pm.isMuted } label: { Image(systemName: pm.isMuted ? "speaker.slash.fill" : "speaker.fill").foregroundColor(.white) }
+                            Slider(value: Binding(get: { Double(pm.volume) }, set: { pm.setVolume(Float($0)) }), in: 0...1).accentColor(.white)
+                            Image(systemName: "speaker.wave.3.fill").foregroundColor(.white)
                         }
-                        HStack(spacing:10) {
-                            Button {
-                                playerManager.isMuted.toggle()
-                                playerManager.player?.isMuted = playerManager.isMuted
-                            } label: {
-                                Image(systemName: playerManager.isMuted ? "speaker.slash.fill" : "speaker.fill")
-                                    .foregroundColor(.white)
-                            }
-                            Slider(
-                                value: Binding(get:{ Double(playerManager.volume) },
-                                               set:{ playerManager.setVolume(Float($0)) }),
-                                in: 0...1
-                            ).accentColor(.white)
-                            Image(systemName:"speaker.wave.3.fill").foregroundColor(.white)
-                        }
-                    }.padding(.horizontal,20).padding(.bottom,30)
-                }
-                .background(
-                    LinearGradient(
-                        colors:[.black.opacity(0.75),.clear,.clear,.black.opacity(0.75)],
-                        startPoint:.top, endPoint:.bottom)
-                )
-                .transition(.opacity)
-                .animation(.easeInOut(duration:0.25), value: showControls)
+                    }.padding(.horizontal, 18).padding(.bottom, 28)
+                }.background(LinearGradient(colors: [.black.opacity(0.7), .clear, .clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom))
+                .transition(.opacity).animation(.easeInOut(duration: 0.2), value: showCtrl)
             }
 
-            func toggleControls() {
-                withAnimation { showControls.toggle() }
-                if showControls { startTimer() } else { timer?.invalidate() }
-            }
-
-            func startTimer() {
-                timer?.invalidate()
-                timer = Timer.scheduledTimer(withTimeInterval:4,repeats:false) { _ in
-                    withAnimation { showControls = false }
-                }
-            }
-
-            func resetTimer() { if showControls { startTimer() } }
+            func toggle() { withAnimation { showCtrl.toggle() }; if showCtrl { startT() } else { timer?.invalidate() } }
+            func startT() { timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { _ in withAnimation { showCtrl = false } } }
         }
 
-        struct VideoPlayerLayer: UIViewRepresentable {
+        struct VPLayer: UIViewRepresentable {
             let player: AVPlayer
-            func makeUIView(context: Context) -> PlayerLayerView { PlayerLayerView(player: player) }
-            func updateUIView(_ v: PlayerLayerView, context: Context) {}
-
-            class PlayerLayerView: UIView {
+            func makeUIView(context: Context) -> VPView { VPView(player: player) }
+            func updateUIView(_ v: VPView, context: Context) {}
+            class VPView: UIView {
                 override class var layerClass: AnyClass { AVPlayerLayer.self }
-                var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
-                init(player: AVPlayer) {
-                    super.init(frame:.zero)
-                    playerLayer.player = player
-                    playerLayer.videoGravity = .resizeAspect
-                }
-                required init?(coder:NSCoder) { fatalError() }
+                var pl: AVPlayerLayer { layer as! AVPlayerLayer }
+                init(player: AVPlayer) { super.init(frame: .zero); pl.player = player; pl.videoGravity = .resizeAspect }
+                required init?(coder: NSCoder) { fatalError() }
             }
         }
 
-        struct SpeedPicker: View {
-            @EnvironmentObject var playerManager: PlayerManager
-            @Environment(\.dismiss) var dismiss
-            let speeds: [Float] = [0.25,0.5,0.75,1.0,1.25,1.5,1.75,2.0,2.5,3.0]
+        struct SpdPicker: View {
+            @EnvironmentObject var pm: PlayerManager; @Environment(\.dismiss) var dismiss
+            let speeds: [Float] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
             var body: some View {
                 NavigationView {
-                    List(speeds, id:\.self) { s in
-                        Button {
-                            playerManager.setSpeed(s); dismiss()
-                        } label: {
-                            HStack {
-                                Text(String(format:"%.2fx",s)).foregroundColor(.primary)
-                                Spacer()
-                                if playerManager.playbackSpeed == s {
-                                    Image(systemName:"checkmark").foregroundColor(.blue)
-                                }
-                            }
-                        }
-                    }
-                    .navigationTitle("Playback Speed").navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement:.navigationBarTrailing){ Button("Done"){dismiss()} } }
+                    List(speeds, id: \.self) { s in
+                        Button { pm.setSpeed(s); dismiss() } label: { HStack { Text(String(format: "%.2fx", s)); Spacer(); if pm.playbackSpeed == s { Image(systemName: "checkmark").foregroundColor(.blue) } } }
+                    }.navigationTitle("Speed").navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() } } }
                 }
             }
         }
 
         struct MiniPlayerView: View {
-            @EnvironmentObject var playerManager: PlayerManager
+            @EnvironmentObject var pm: PlayerManager
             var body: some View {
-                HStack(spacing:12) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius:6).fill(Color.blue.opacity(0.3)).frame(width:52,height:36)
-                        Image(systemName:"play.fill").foregroundColor(.blue).font(.system(size:14))
-                    }
-                    VStack(alignment:.leading,spacing:4) {
-                        Text(playerManager.currentVideo?.video.title ?? "")
-                            .font(.system(size:13,weight:.medium)).foregroundColor(.white).lineLimit(1)
-                        GeometryReader { g in
-                            ZStack(alignment:.leading) {
-                                Capsule().fill(Color.white.opacity(0.25)).frame(height:2)
-                                Capsule().fill(Color.blue).frame(width:g.size.width*playerManager.progress,height:2)
-                            }
-                        }.frame(height:2)
+                HStack(spacing: 10) {
+                    ZStack { RoundedRectangle(cornerRadius: 6).fill(Color.blue.opacity(0.3)).frame(width: 50, height: 34); Image(systemName: "play.fill").foregroundColor(.blue).font(.system(size: 13)) }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(pm.currentVideo?.video.title ?? "").font(.system(size: 12, weight: .medium)).foregroundColor(.white).lineLimit(1)
+                        GeometryReader { g in ZStack(alignment: .leading) { Capsule().fill(Color.white.opacity(0.2)).frame(height: 2); Capsule().fill(Color.blue).frame(width: g.size.width * pm.progress, height: 2) } }.frame(height: 2)
                     }
                     Spacer()
-                    Button { playerManager.togglePlayPause() } label: {
-                        Image(systemName: playerManager.isPlaying ? "pause.fill" : "play.fill")
-                            .foregroundColor(.white).font(.system(size:18))
-                    }
-                    Button { playerManager.close() } label: {
-                        Image(systemName:"xmark").foregroundColor(.white).font(.system(size:16))
-                    }
-                }
-                .padding(.horizontal,16).padding(.vertical,10)
-                .background(RoundedRectangle(cornerRadius:16).fill(Color(.systemGray6).opacity(0.95))
-                    .shadow(color:.black.opacity(0.3),radius:10))
-                .padding(.horizontal,12)
-                .onTapGesture { playerManager.isFullScreen = true; playerManager.isMinimized = false }
+                    Button { pm.togglePlayPause() } label: { Image(systemName: pm.isPlaying ? "pause.fill" : "play.fill").foregroundColor(.white).font(.system(size: 16)) }
+                    Button { pm.close() } label: { Image(systemName: "xmark").foregroundColor(.white).font(.system(size: 14)) }
+                }.padding(.horizontal, 14).padding(.vertical, 8).background(RoundedRectangle(cornerRadius: 14).fill(Color(.systemGray6).opacity(0.95)).shadow(color: .black.opacity(0.3), radius: 8)).padding(.horizontal, 10)
+                .onTapGesture { pm.isFullScreen = true; pm.isMinimized = false }
             }
         }
         SWIFTEOF
@@ -1988,62 +1338,31 @@ jobs:
         import SwiftUI
 
         struct LibraryView: View {
-            @EnvironmentObject var downloadManager: DownloadManager
-            @EnvironmentObject var playerManager: PlayerManager
+            @EnvironmentObject var dm: DownloadManager
+            @EnvironmentObject var pm: PlayerManager
             @State private var search = ""
-
-            var filtered: [DownloadTask] {
-                search.isEmpty ? downloadManager.completedVideos :
-                downloadManager.completedVideos.filter {
-                    $0.video.title.localizedCaseInsensitiveContains(search)
-                }
-            }
-
+            var filtered: [DownloadTask] { search.isEmpty ? dm.completedVideos : dm.completedVideos.filter { $0.video.title.localizedCaseInsensitiveContains(search) } }
             var body: some View {
                 NavigationView {
                     Group {
-                        if filtered.isEmpty {
-                            EmptyState(icon:"play.rectangle.fill", title:"Library Empty",
-                                       sub:"Downloaded videos appear here")
-                        } else {
+                        if filtered.isEmpty { EmptyV(icon: "play.rectangle.fill", t: "Library Empty", s: "Downloaded videos appear here") }
+                        else {
                             ScrollView {
-                                LazyVGrid(columns:[GridItem(.flexible()),GridItem(.flexible())],spacing:12) {
-                                    ForEach(filtered) { task in
-                                        GridCard(task:task) { playerManager.playVideo(task) }
+                                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                                    ForEach(filtered) { t in
+                                        Button { pm.playVideo(t) } label: {
+                                            VStack(alignment: .leading, spacing: 5) {
+                                                ZStack { RoundedRectangle(cornerRadius: 10).fill(Color.blue.opacity(0.2)).aspectRatio(16/9, contentMode: .fit); Image(systemName: "play.circle.fill").font(.system(size: 36)).foregroundColor(.blue) }
+                                                Text(t.video.title).font(.system(size: 12, weight: .medium)).foregroundColor(.primary).lineLimit(2).multilineTextAlignment(.leading)
+                                                Text(t.quality.rawValue).font(.system(size: 10, weight: .bold)).foregroundColor(.white).padding(.horizontal, 5).padding(.vertical, 2).background(t.quality.color).cornerRadius(4)
+                                            }
+                                        }.buttonStyle(.plain)
                                     }
                                 }.padding()
                             }
                         }
-                    }
-                    .searchable(text:$search, prompt:"Search videos")
-                    .navigationTitle("My Library")
+                    }.searchable(text: $search, prompt: "Search").navigationTitle("Library")
                 }
-            }
-        }
-
-        struct GridCard: View {
-            let task: DownloadTask; let onPlay: ()->Void
-            var body: some View {
-                Button(action:onPlay) {
-                    VStack(alignment:.leading,spacing:6) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius:10).fill(Color.blue.opacity(0.2))
-                                .aspectRatio(16/9,contentMode:.fit)
-                            Image(systemName:"play.circle.fill").font(.system(size:38)).foregroundColor(.blue)
-                        }
-                        Text(task.video.title).font(.system(size:12,weight:.medium))
-                            .foregroundColor(.primary).lineLimit(2).multilineTextAlignment(.leading)
-                        HStack {
-                            Text(task.quality.rawValue).font(.system(size:10,weight:.bold))
-                                .foregroundColor(.white).padding(.horizontal,6).padding(.vertical,2)
-                                .background(task.quality.color).cornerRadius(4)
-                            Spacer()
-                            if let d = task.video.duration {
-                                Text(d).font(.system(size:10)).foregroundColor(.secondary)
-                            }
-                        }
-                    }
-                }.buttonStyle(.plain)
             }
         }
         SWIFTEOF
@@ -2073,8 +1392,8 @@ jobs:
             <key>CFBundleIdentifier</key><string>com.videoflow.app</string>
             <key>CFBundleName</key><string>VideoFlow</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>3.0</string>
-            <key>CFBundleVersion</key><string>3</string>
+            <key>CFBundleShortVersionString</key><string>4.0</string>
+            <key>CFBundleVersion</key><string>4</string>
             <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
             <key>LSRequiresIPhoneOS</key><true/>
             <key>MinimumOSVersion</key><string>16.0</string>
@@ -2095,7 +1414,6 @@ jobs:
             <array>
                 <string>audio</string>
                 <string>fetch</string>
-                <string>remote-notification</string>
             </array>
             <key>UIFileSharingEnabled</key><true/>
             <key>LSSupportsOpeningDocumentsInPlace</key><true/>
@@ -2114,175 +1432,99 @@ jobs:
         	classes = {};
         	objectVersion = 56;
         	objects = {
-        		AA01 = {isa=PBXBuildFile;fileRef=BB01;};
-        		AA02 = {isa=PBXBuildFile;fileRef=BB02;};
-        		AA03 = {isa=PBXBuildFile;fileRef=BB03;};
-        		AA04 = {isa=PBXBuildFile;fileRef=BB04;};
-        		AA05 = {isa=PBXBuildFile;fileRef=BB05;};
-        		AA06 = {isa=PBXBuildFile;fileRef=BB06;};
-        		AA07 = {isa=PBXBuildFile;fileRef=BB07;};
-        		AA08 = {isa=PBXBuildFile;fileRef=BB08;};
-        		AA09 = {isa=PBXBuildFile;fileRef=BB09;};
-        		AA10 = {isa=PBXBuildFile;fileRef=BB10;};
-        		AA11 = {isa=PBXBuildFile;fileRef=BB11;};
-        		AA12 = {isa=PBXBuildFile;fileRef=BB12;};
-        		AA13 = {isa=PBXBuildFile;fileRef=BB13;};
-        		BB01 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=VideoFlowApp.swift;name=VideoFlowApp.swift;sourceTree="<group>";};
-        		BB02 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=AppDelegate.swift;name=AppDelegate.swift;sourceTree="<group>";};
-        		BB03 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=VideoItem.swift;name=VideoItem.swift;sourceTree="<group>";};
-        		BB04 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=DownloadTask.swift;name=DownloadTask.swift;sourceTree="<group>";};
-        		BB05 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=DownloadManager.swift;name=DownloadManager.swift;sourceTree="<group>";};
-        		BB06 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=PlayerManager.swift;name=PlayerManager.swift;sourceTree="<group>";};
-        		BB07 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=UltimateExtractor.swift;name=UltimateExtractor.swift;sourceTree="<group>";};
-        		BB08 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=ContentView.swift;name=ContentView.swift;sourceTree="<group>";};
-        		BB09 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=BrowserView.swift;name=BrowserView.swift;sourceTree="<group>";};
-        		BB10 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=DownloadsView.swift;name=DownloadsView.swift;sourceTree="<group>";};
-        		BB11 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=PlayerView.swift;name=PlayerView.swift;sourceTree="<group>";};
-        		BB12 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=LibraryView.swift;name=LibraryView.swift;sourceTree="<group>";};
-        		BB13 = {isa=PBXFileReference;lastKnownFileType=folder.assetcatalog;path=Assets.xcassets;name=Assets.xcassets;sourceTree="<group>";};
-        		BB14 = {isa=PBXFileReference;lastKnownFileType=text.plist.xml;path=Info.plist;name=Info.plist;sourceTree="<group>";};
-        		CC01 = {isa=PBXFileReference;explicitFileType=wrapper.application;includeInIndex=0;path=VideoFlow.app;sourceTree=BUILT_PRODUCTS_DIR;};
-        		DD01 = {isa=PBXFrameworksBuildPhase;buildActionMask=2147483647;files=();runOnlyForDeploymentPostprocessing=0;};
-        		EE01 = {isa=PBXGroup;children=(EE02,EE09);sourceTree="<group>";};
-        		EE02 = {isa=PBXGroup;children=(EE03,EE04,EE05,EE06,EE08,EE07);path=VideoFlow;sourceTree="<group>";};
-        		EE03 = {isa=PBXGroup;children=(BB01,BB02);name=App;path=App;sourceTree="<group>";};
-        		EE04 = {isa=PBXGroup;children=(BB08,BB09,BB10,BB11,BB12);name=Views;path=Views;sourceTree="<group>";};
-        		EE05 = {isa=PBXGroup;children=(BB03,BB04);name=Models;path=Models;sourceTree="<group>";};
-        		EE06 = {isa=PBXGroup;children=(BB05,BB06);name=Services;path=Services;sourceTree="<group>";};
-        		EE07 = {isa=PBXGroup;children=(BB13,BB14);name=Resources;path=Resources;sourceTree="<group>";};
-        		EE08 = {isa=PBXGroup;children=(BB07);name=Extractors;path=Extractors;sourceTree="<group>";};
-        		EE09 = {isa=PBXGroup;children=(CC01);name=Products;sourceTree="<group>";};
-        		FF01 = {
+        		A01 = {isa=PBXBuildFile;fileRef=B01;};
+        		A02 = {isa=PBXBuildFile;fileRef=B02;};
+        		A03 = {isa=PBXBuildFile;fileRef=B03;};
+        		A04 = {isa=PBXBuildFile;fileRef=B04;};
+        		A05 = {isa=PBXBuildFile;fileRef=B05;};
+        		A06 = {isa=PBXBuildFile;fileRef=B06;};
+        		A07 = {isa=PBXBuildFile;fileRef=B07;};
+        		A08 = {isa=PBXBuildFile;fileRef=B08;};
+        		A09 = {isa=PBXBuildFile;fileRef=B09;};
+        		A10 = {isa=PBXBuildFile;fileRef=B10;};
+        		A11 = {isa=PBXBuildFile;fileRef=B11;};
+        		A12 = {isa=PBXBuildFile;fileRef=B12;};
+        		A13 = {isa=PBXBuildFile;fileRef=B13;};
+        		B01 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=VideoFlowApp.swift;sourceTree="<group>";};
+        		B02 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=AppDelegate.swift;sourceTree="<group>";};
+        		B03 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=VideoItem.swift;sourceTree="<group>";};
+        		B04 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=DownloadTask.swift;sourceTree="<group>";};
+        		B05 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=DownloadManager.swift;sourceTree="<group>";};
+        		B06 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=PlayerManager.swift;sourceTree="<group>";};
+        		B07 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=UltimateExtractor.swift;sourceTree="<group>";};
+        		B08 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=ContentView.swift;sourceTree="<group>";};
+        		B09 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=BrowserView.swift;sourceTree="<group>";};
+        		B10 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=DownloadsView.swift;sourceTree="<group>";};
+        		B11 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=PlayerView.swift;sourceTree="<group>";};
+        		B12 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=LibraryView.swift;sourceTree="<group>";};
+        		B13 = {isa=PBXFileReference;lastKnownFileType=folder.assetcatalog;path=Assets.xcassets;sourceTree="<group>";};
+        		B14 = {isa=PBXFileReference;lastKnownFileType=text.plist.xml;path=Info.plist;sourceTree="<group>";};
+        		C01 = {isa=PBXFileReference;explicitFileType=wrapper.application;includeInIndex=0;path=VideoFlow.app;sourceTree=BUILT_PRODUCTS_DIR;};
+        		D01 = {isa=PBXFrameworksBuildPhase;buildActionMask=2147483647;files=();runOnlyForDeploymentPostprocessing=0;};
+        		E01 = {isa=PBXGroup;children=(E02,E09);sourceTree="<group>";};
+        		E02 = {isa=PBXGroup;children=(E03,E04,E05,E06,E08,E07);path=VideoFlow;sourceTree="<group>";};
+        		E03 = {isa=PBXGroup;children=(B01,B02);name=App;path=App;sourceTree="<group>";};
+        		E04 = {isa=PBXGroup;children=(B08,B09,B10,B11,B12);name=Views;path=Views;sourceTree="<group>";};
+        		E05 = {isa=PBXGroup;children=(B03,B04);name=Models;path=Models;sourceTree="<group>";};
+        		E06 = {isa=PBXGroup;children=(B05,B06);name=Services;path=Services;sourceTree="<group>";};
+        		E07 = {isa=PBXGroup;children=(B13,B14);name=Resources;path=Resources;sourceTree="<group>";};
+        		E08 = {isa=PBXGroup;children=(B07);name=Extractors;path=Extractors;sourceTree="<group>";};
+        		E09 = {isa=PBXGroup;children=(C01);name=Products;sourceTree="<group>";};
+        		F01 = {
         			isa=PBXNativeTarget;
-        			buildConfigurationList=GG01;
-        			buildPhases=(FF02,DD01,FF03);
+        			buildConfigurationList=G01;
+        			buildPhases=(F02,D01,F03);
         			buildRules=();
         			dependencies=();
         			name=VideoFlow;
         			productName=VideoFlow;
-        			productReference=CC01;
+        			productReference=C01;
         			productType="com.apple.product-type.application";
         		};
-        		FF00 = {
+        		F00 = {
         			isa=PBXProject;
-        			attributes={
-        				BuildIndependentTargetsInParallel=1;
-        				LastSwiftUpdateCheck=1500;
-        				LastUpgradeCheck=1500;
-        				TargetAttributes={FF01={CreatedOnToolsVersion=15.0;};};
-        			};
-        			buildConfigurationList=GG00;
+        			attributes={BuildIndependentTargetsInParallel=1;LastSwiftUpdateCheck=1500;LastUpgradeCheck=1500;TargetAttributes={F01={CreatedOnToolsVersion=15.0;};};};
+        			buildConfigurationList=G00;
         			compatibilityVersion="Xcode 14.0";
         			developmentRegion=en;
         			hasScannedForEncodings=0;
         			knownRegions=(en,Base);
-        			mainGroup=EE01;
-        			productRefGroup=EE09;
+        			mainGroup=E01;
+        			productRefGroup=E09;
         			projectDirPath="";
         			projectRoot="";
-        			targets=(FF01);
+        			targets=(F01);
         		};
-        		FF03 = {isa=PBXResourcesBuildPhase;buildActionMask=2147483647;files=(AA13);runOnlyForDeploymentPostprocessing=0;};
-        		FF02 = {
-        			isa=PBXSourcesBuildPhase;
-        			buildActionMask=2147483647;
-        			files=(AA01,AA02,AA03,AA04,AA05,AA06,AA07,AA08,AA09,AA10,AA11,AA12);
-        			runOnlyForDeploymentPostprocessing=0;
-        		};
-        		HH01 = {
-        			isa=XCBuildConfiguration;
-        			buildSettings={
-        				ALWAYS_SEARCH_USER_PATHS=NO;
-        				CLANG_ENABLE_MODULES=YES;
-        				CLANG_ENABLE_OBJC_ARC=YES;
-        				CODE_SIGNING_ALLOWED=NO;
-        				CODE_SIGN_IDENTITY="";
-        				GCC_C_LANGUAGE_STANDARD=gnu17;
-        				SDKROOT=iphoneos;
-        				SWIFT_OPTIMIZATION_LEVEL="-Onone";
-        				SWIFT_VERSION=5.0;
-        			};
-        			name=Debug;
-        		};
-        		HH02 = {
-        			isa=XCBuildConfiguration;
-        			buildSettings={
-        				ALWAYS_SEARCH_USER_PATHS=NO;
-        				CLANG_ENABLE_MODULES=YES;
-        				CLANG_ENABLE_OBJC_ARC=YES;
-        				CODE_SIGNING_ALLOWED=NO;
-        				CODE_SIGN_IDENTITY="";
-        				GCC_C_LANGUAGE_STANDARD=gnu17;
-        				SDKROOT=iphoneos;
-        				SWIFT_COMPILATION_MODE=wholemodule;
-        				SWIFT_OPTIMIZATION_LEVEL="-O";
-        				SWIFT_VERSION=5.0;
-        			};
-        			name=Release;
-        		};
-        		HH03 = {
-        			isa=XCBuildConfiguration;
-        			buildSettings={
-        				ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon;
-        				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME=AccentColor;
-        				CODE_SIGNING_ALLOWED=NO;
-        				CODE_SIGN_IDENTITY="";
-        				CODE_SIGN_STYLE=Manual;
-        				CURRENT_PROJECT_VERSION=3;
-        				GENERATE_INFOPLIST_FILE=NO;
-        				INFOPLIST_FILE=VideoFlow/Resources/Info.plist;
-        				IPHONEOS_DEPLOYMENT_TARGET=16.0;
-        				LD_RUNPATH_SEARCH_PATHS="$(inherited) @executable_path/Frameworks";
-        				MARKETING_VERSION=3.0;
-        				PRODUCT_BUNDLE_IDENTIFIER=com.videoflow.app;
-        				PRODUCT_NAME=VideoFlow;
-        				PROVISIONING_PROFILE_SPECIFIER="";
-        				SWIFT_EMIT_LOC_STRINGS=YES;
-        				SWIFT_VERSION=5.0;
-        				TARGETED_DEVICE_FAMILY="1,2";
-        			};
-        			name=Debug;
-        		};
-        		HH04 = {
-        			isa=XCBuildConfiguration;
-        			buildSettings={
-        				ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon;
-        				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME=AccentColor;
-        				CODE_SIGNING_ALLOWED=NO;
-        				CODE_SIGN_IDENTITY="";
-        				CODE_SIGN_STYLE=Manual;
-        				CURRENT_PROJECT_VERSION=3;
-        				GENERATE_INFOPLIST_FILE=NO;
-        				INFOPLIST_FILE=VideoFlow/Resources/Info.plist;
-        				IPHONEOS_DEPLOYMENT_TARGET=16.0;
-        				LD_RUNPATH_SEARCH_PATHS="$(inherited) @executable_path/Frameworks";
-        				MARKETING_VERSION=3.0;
-        				PRODUCT_BUNDLE_IDENTIFIER=com.videoflow.app;
-        				PRODUCT_NAME=VideoFlow;
-        				PROVISIONING_PROFILE_SPECIFIER="";
-        				SWIFT_EMIT_LOC_STRINGS=YES;
-        				SWIFT_VERSION=5.0;
-        				TARGETED_DEVICE_FAMILY="1,2";
-        			};
-        			name=Release;
-        		};
-        		GG00 = {isa=XCConfigurationList;buildConfigurations=(HH01,HH02);defaultConfigurationIsVisible=0;defaultConfigurationName=Release;};
-        		GG01 = {isa=XCConfigurationList;buildConfigurations=(HH03,HH04);defaultConfigurationIsVisible=0;defaultConfigurationName=Release;};
+        		F03 = {isa=PBXResourcesBuildPhase;buildActionMask=2147483647;files=(A13);runOnlyForDeploymentPostprocessing=0;};
+        		F02 = {isa=PBXSourcesBuildPhase;buildActionMask=2147483647;files=(A01,A02,A03,A04,A05,A06,A07,A08,A09,A10,A11,A12);runOnlyForDeploymentPostprocessing=0;};
+        		H01 = {isa=XCBuildConfiguration;buildSettings={ALWAYS_SEARCH_USER_PATHS=NO;CLANG_ENABLE_MODULES=YES;CLANG_ENABLE_OBJC_ARC=YES;CODE_SIGNING_ALLOWED=NO;CODE_SIGN_IDENTITY="";GCC_C_LANGUAGE_STANDARD=gnu17;SDKROOT=iphoneos;SWIFT_OPTIMIZATION_LEVEL="-Onone";SWIFT_VERSION=5.0;};name=Debug;};
+        		H02 = {isa=XCBuildConfiguration;buildSettings={ALWAYS_SEARCH_USER_PATHS=NO;CLANG_ENABLE_MODULES=YES;CLANG_ENABLE_OBJC_ARC=YES;CODE_SIGNING_ALLOWED=NO;CODE_SIGN_IDENTITY="";GCC_C_LANGUAGE_STANDARD=gnu17;SDKROOT=iphoneos;SWIFT_COMPILATION_MODE=wholemodule;SWIFT_OPTIMIZATION_LEVEL="-O";SWIFT_VERSION=5.0;};name=Release;};
+        		H03 = {isa=XCBuildConfiguration;buildSettings={ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon;ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME=AccentColor;CODE_SIGNING_ALLOWED=NO;CODE_SIGN_IDENTITY="";CODE_SIGN_STYLE=Manual;CURRENT_PROJECT_VERSION=4;GENERATE_INFOPLIST_FILE=NO;INFOPLIST_FILE=VideoFlow/Resources/Info.plist;IPHONEOS_DEPLOYMENT_TARGET=16.0;LD_RUNPATH_SEARCH_PATHS="$(inherited) @executable_path/Frameworks";MARKETING_VERSION=4.0;PRODUCT_BUNDLE_IDENTIFIER=com.videoflow.app;PRODUCT_NAME=VideoFlow;PROVISIONING_PROFILE_SPECIFIER="";SWIFT_EMIT_LOC_STRINGS=YES;SWIFT_VERSION=5.0;TARGETED_DEVICE_FAMILY="1,2";};name=Debug;};
+        		H04 = {isa=XCBuildConfiguration;buildSettings={ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon;ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME=AccentColor;CODE_SIGNING_ALLOWED=NO;CODE_SIGN_IDENTITY="";CODE_SIGN_STYLE=Manual;CURRENT_PROJECT_VERSION=4;GENERATE_INFOPLIST_FILE=NO;INFOPLIST_FILE=VideoFlow/Resources/Info.plist;IPHONEOS_DEPLOYMENT_TARGET=16.0;LD_RUNPATH_SEARCH_PATHS="$(inherited) @executable_path/Frameworks";MARKETING_VERSION=4.0;PRODUCT_BUNDLE_IDENTIFIER=com.videoflow.app;PRODUCT_NAME=VideoFlow;PROVISIONING_PROFILE_SPECIFIER="";SWIFT_EMIT_LOC_STRINGS=YES;SWIFT_VERSION=5.0;TARGETED_DEVICE_FAMILY="1,2";};name=Release;};
+        		G00 = {isa=XCConfigurationList;buildConfigurations=(H01,H02);defaultConfigurationIsVisible=0;defaultConfigurationName=Release;};
+        		G01 = {isa=XCConfigurationList;buildConfigurations=(H03,H04);defaultConfigurationIsVisible=0;defaultConfigurationName=Release;};
         	};
-        	rootObject=FF00;
+        	rootObject=F00;
         }
         PBXEOF
         echo "project.pbxproj created!"
 
-    - name: Fix Swift File Indentation
+    - name: Fix Swift Indentation
       run: |
         for f in $(find VideoFlow -name "*.swift"); do
-          sed -i '' 's/^        //' "$f" 2>/dev/null || sed -i 's/^        //' "$f"
+          sed -i '' 's/^        //' "$f" 2>/dev/null || true
         done
         echo "Indentation fixed"
 
-    - name: Show Project Structure
-      run: find . -not -path './.git/*' -not -path './build/*' | head -80
+    - name: Verify Files
+      run: |
+        echo "=== Project Structure ==="
+        find VideoFlow -type f | sort
+        echo ""
+        echo "=== Swift Files ==="
+        find VideoFlow -name "*.swift" | while read f; do
+          echo "--- $f ($(wc -l < "$f") lines) ---"
+        done
 
     - name: Build App
       run: |
@@ -2300,35 +1542,34 @@ jobs:
           clean build \
           2>&1 | tee build.log | grep -E "(error:|warning:|Build succeeded|FAILED|Compiling)" || true
 
-    - name: Check Build Result
+    - name: Check Build
       run: |
         if grep -q "BUILD SUCCEEDED" build.log; then
           echo "BUILD SUCCEEDED"
         else
-          echo "BUILD FAILED - Last 80 lines:"
-          tail -80 build.log
+          echo "BUILD FAILED"
+          tail -100 build.log
           exit 1
         fi
 
     - name: Package IPA
       run: |
-        APP_PATH=$(find build -name "VideoFlow.app" -type d | head -1)
-        echo "App found at: $APP_PATH"
+        APP=$(find build -name "VideoFlow.app" -type d | head -1)
+        echo "App: $APP"
         mkdir -p Payload
-        cp -r "$APP_PATH" Payload/VideoFlow.app
-        zip -r VideoFlow.ipa Payload/
+        cp -r "$APP" Payload/VideoFlow.app
+        zip -r VideoFlow-v4.ipa Payload/
         rm -rf Payload/
-        ls -lh VideoFlow.ipa
-        echo "IPA packaged successfully!"
+        ls -lh VideoFlow-v4.ipa
 
     - name: Upload IPA
       uses: actions/upload-artifact@v4
       with:
-        name: VideoFlow-ULTIMATE-IPA
-        path: VideoFlow.ipa
+        name: VideoFlow-ULTIMATE-v4
+        path: VideoFlow-v4.ipa
         retention-days: 30
 
-    - name: Upload Build Log (on failure)
+    - name: Upload Log on Failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
