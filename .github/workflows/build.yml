@@ -25,217 +25,47 @@ jobs:
         curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o Resources/yt-dlp
         chmod +x Resources/yt-dlp
 
-    - name: Create Xcode project
+    - name: Create Package.swift
       run: |
-        mkdir -p MegaDownloader.xcodeproj
-        echo '
-// !$*UTF8*$!
-{
-  archiveVersion = 1;
-  classes = {};
-  objectVersion = 56;
-  objects = {
-    089C1664F84120C50252450E = {
-      isa = PBXProject;
-      buildConfigurationList = 1DEB928908733DD80010E9CD;
-      compatibilityVersion = "Xcode 14.0";
-      developmentRegion = en;
-      hasScannedForEncodings = 0;
-      knownRegions = (en, Base);
-      mainGroup = 089C1665F84120C50252450E;
-      productRefGroup = 089C1666F84120C50252450E;
-      projectDirPath = "";
-      projectRoot = "";
-      targets = (089C1667F84120C50252450E);
-    };
-    089C1665F84120C50252450E = {
-      isa = PBXGroup;
-      children = (089C1667F84120C50252450E);
-      name = MegaDownloader;
-      sourceTree = "<group>";
-    };
-    089C1666F84120C50252450E = {
-      isa = PBXGroup;
-      children = ();
-      name = Products;
-      sourceTree = "<group>";
-    };
-    089C1667F84120C50252450E = {
-      isa = PBXNativeTarget;
-      buildConfigurationList = 1DEB928A08733DD80010E9CD;
-      buildPhases = (089C1668F84120C50252450E);
-      buildRules = ();
-      dependencies = ();
-      name = MegaDownloader;
-      productName = MegaDownloader;
-      productReference = 089C1669F84120C50252450E;
-      productType = "com.apple.product-type.application";
-    };
-    089C1668F84120C50252450E = {
-      isa = PBXSourcesBuildPhase;
-      buildActionMask = 2147483647;
-      files = ();
-      runOnlyForDeploymentPostprocessing = 0;
-    };
-    089C1669F84120C50252450E = {
-      isa = PBXFileReference;
-      explicitFileType = wrapper.application;
-      includeInIndex = 0;
-      path = MegaDownloader.app;
-      sourceTree = BUILT_PRODUCTS_DIR;
-    };
-    1DEB928908733DD80010E9CD = {
-      isa = XCConfigurationList;
-      buildConfigurations = (1DEB928B08733DD80010E9CD, 1DEB928C08733DD80010E9CD);
-      defaultConfigurationIsVisible = 0;
-      defaultConfigurationName = Release;
-    };
-    1DEB928A08733DD80010E9CD = {
-      isa = XCConfigurationList;
-      buildConfigurations = (1DEB928D08733DD80010E9CD, 1DEB928E08733DD80010E9CD);
-      defaultConfigurationIsVisible = 0;
-      defaultConfigurationName = Release;
-    };
-    1DEB928B08733DD80010E9CD = {
-      isa = XCBuildConfiguration;
-      buildSettings = {
-        ALWAYS_SEARCH_USER_PATHS = NO;
-        CLANG_ENABLE_MODULES = YES;
-        CODE_SIGN_IDENTITY = "";
-        CODE_SIGN_STYLE = Manual;
-        COPY_PHASE_STRIP = NO;
-        DEBUG_INFORMATION_FORMAT = dwarf;
-        ENABLE_STRICT_OBJC_MSGSEND = YES;
-        GCC_DYNAMIC_NO_PIC = NO;
-        GCC_OPTIMIZATION_LEVEL = 0;
-        GCC_PREPROCESSOR_DEFINITIONS = ("DEBUG=1", "$(inherited)");
-        GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
-        GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
-        IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-        MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
-        ONLY_ACTIVE_ARCH = YES;
-        SDKROOT = iphoneos;
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
-        SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-        PROVISIONING_PROFILE_SPECIFIER = "";
-        CODE_SIGNING_REQUIRED = NO;
-        CODE_SIGNING_ALLOWED = NO;
-      };
-      name = Debug;
-    };
-    1DEB928C08733DD80010E9CD = {
-      isa = XCBuildConfiguration;
-      buildSettings = {
-        ALWAYS_SEARCH_USER_PATHS = NO;
-        CLANG_ENABLE_MODULES = YES;
-        CODE_SIGN_IDENTITY = "";
-        CODE_SIGN_STYLE = Manual;
-        COPY_PHASE_STRIP = NO;
-        DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-        ENABLE_NS_ASSERTIONS = NO;
-        ENABLE_STRICT_OBJC_MSGSEND = YES;
-        GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
-        GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
-        IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-        MTL_ENABLE_DEBUG_INFO = NO;
-        SDKROOT = iphoneos;
-        SWIFT_COMPILATION_MODE = wholemodule;
-        SWIFT_OPTIMIZATION_LEVEL = "-O";
-        VALIDATE_PRODUCT = YES;
-        PROVISIONING_PROFILE_SPECIFIER = "";
-        CODE_SIGNING_REQUIRED = NO;
-        CODE_SIGNING_ALLOWED = NO;
-      };
-      name = Release;
-    };
-    1DEB928D08733DD80010E9CD = {
-      isa = XCBuildConfiguration;
-      buildSettings = {
-        ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-        CODE_SIGN_IDENTITY = "";
-        CODE_SIGN_STYLE = Manual;
-        CURRENT_PROJECT_VERSION = 1;
-        DEVELOPMENT_TEAM = "";
-        GENERATE_INFOPLIST_FILE = YES;
-        INFOPLIST_FILE = MegaDownloader/Info.plist;
-        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-        INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-        INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-        LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
-        MARKETING_VERSION = 1.0;
-        PRODUCT_BUNDLE_IDENTIFIER = com.megadownloader.app;
-        PRODUCT_NAME = "$(TARGET_NAME)";
-        PROVISIONING_PROFILE_SPECIFIER = "";
-        SWIFT_EMIT_LOC_STRINGS = YES;
-        SWIFT_VERSION = 5.0;
-        TARGETED_DEVICE_FAMILY = "1,2";
-        CODE_SIGNING_REQUIRED = NO;
-        CODE_SIGNING_ALLOWED = NO;
-      };
-      name = Debug;
-    };
-    1DEB928E08733DD80010E9CD = {
-      isa = XCBuildConfiguration;
-      buildSettings = {
-        ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-        CODE_SIGN_IDENTITY = "";
-        CODE_SIGN_STYLE = Manual;
-        CURRENT_PROJECT_VERSION = 1;
-        DEVELOPMENT_TEAM = "";
-        GENERATE_INFOPLIST_FILE = YES;
-        INFOPLIST_FILE = MegaDownloader/Info.plist;
-        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-        INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-        INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-        LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks");
-        MARKETING_VERSION = 1.0;
-        PRODUCT_BUNDLE_IDENTIFIER = com.megadownloader.app;
-        PRODUCT_NAME = "$(TARGET_NAME)";
-        PROVISIONING_PROFILE_SPECIFIER = "";
-        SWIFT_EMIT_LOC_STRINGS = YES;
-        SWIFT_VERSION = 5.0;
-        TARGETED_DEVICE_FAMILY = "1,2";
-        CODE_SIGNING_REQUIRED = NO;
-        CODE_SIGNING_ALLOWED = NO;
-      };
-      name = Release;
-    };
-  };
-  rootObject = 089C1664F84120C50252450E;
-}
-' > MegaDownloader.xcodeproj/project.pbxproj
+        cat > Package.swift << 'EOF'
+        // swift-tools-version: 5.9
+        import PackageDescription
 
-    - name: Move Swift files to MegaDownloader folder
-      run: |
-        mkdir -p MegaDownloader
-        mv ContentView.swift MegaDownloader/ 2>/dev/null || true
-        mv DownloadManager.swift MegaDownloader/ 2>/dev/null || true
-        mv HistoryManager.swift MegaDownloader/ 2>/dev/null || true
-        mv SettingsManager.swift MegaDownloader/ 2>/dev/null || true
-        mv MegaDownloaderApp.swift MegaDownloader/ 2>/dev/null || true
-        mv Info.plist MegaDownloader/ 2>/dev/null || true
+        let package = Package(
+            name: "MegaDownloader",
+            platforms: [.iOS(.v16)],
+            products: [
+                .executable(name: "MegaDownloader", targets: ["MegaDownloader"])
+            ],
+            targets: [
+                .executableTarget(
+                    name: "MegaDownloader",
+                    path: "Sources"
+                )
+            ]
+        )
+        EOF
 
-    - name: Build with xcodebuild
+    - name: Organize source files
       run: |
-        xcodebuild -project MegaDownloader.xcodeproj \
-          -scheme MegaDownloader \
-          -sdk iphoneos \
-          -configuration Release \
-          -derivedDataPath build \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGNING_ALLOWED=NO \
-          PRODUCT_BUNDLE_IDENTIFIER="com.megadownloader.app" \
-          build
+        mkdir -p Sources
+        mv *.swift Sources/ 2>/dev/null || true
+        mv Info.plist Sources/ 2>/dev/null || true
 
-    - name: Create IPA
+    - name: Build with SPM
+      run: swift build -c release --sdk $(xcrun --sdk iphoneos --show-sdk-path) --target MegaDownloader
+
+    - name: Create app bundle
       run: |
-        mkdir -p Payload
-        cp -r build/Build/Products/Release-iphoneos/MegaDownloader.app Payload/
+        mkdir -p Payload/MegaDownloader.app
+        cp .build/release/MegaDownloader Payload/MegaDownloader.app/
         cp Resources/yt-dlp Payload/MegaDownloader.app/
+        cp Sources/Info.plist Payload/MegaDownloader.app/
         chmod +x Payload/MegaDownloader.app/yt-dlp
         ldid -STrollStore.entitlements Payload/MegaDownloader.app/MegaDownloader
-        zip -r MegaDownloader.ipa Payload
+
+    - name: Create IPA
+      run: zip -r MegaDownloader.ipa Payload
 
     - name: Upload IPA
       uses: actions/upload-artifact@v4
