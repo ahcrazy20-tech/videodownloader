@@ -223,7 +223,7 @@ jobs:
         SWIFTEOF
 
         # ============================================================
-        # FILE 5: DownloadManager.swift (STREAM-TO-FILE - NO PERMISSION BUGS)
+        # FILE 5: DownloadManager.swift (STREAM-TO-FILE)
         # ============================================================
         cat > VideoFlow/Services/DownloadManager.swift << 'SWIFTEOF'
         import Foundation
@@ -471,7 +471,7 @@ jobs:
         SWIFTEOF
 
         # ============================================================
-        # FILE 7: UltimateExtractor.swift (MEGA ENGINE)
+        # FILE 7: UltimateExtractor.swift
         # ============================================================
         cat > VideoFlow/Extractors/UltimateExtractor.swift << 'SWIFTEOF'
         import Foundation
@@ -527,14 +527,12 @@ jobs:
             func extract(from url: String, quality: VideoQuality = .p1080, audioOnly: Bool = false, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
                 let site = detectSite(url)
 
-                // Direct links - no extraction needed
                 if site == .direct || site == .hls {
                     let s = ExtractedStream(url: url, quality: quality, headers: [:], filename: nil, hasAudio: true)
                     completion(.success(ExtractedVideo(title: URL(string: url)?.lastPathComponent ?? "Video", streams: [s], thumbnail: nil, sourceType: site)))
                     return
                 }
 
-                // Try site-specific first, then Cobalt chain, then HTML scrape
                 trySiteSpecific(url: url, site: site, quality: quality) { [weak self] r in
                     switch r {
                     case .success(let v): completion(.success(v))
@@ -542,14 +540,18 @@ jobs:
                         self?.tryCobaltChain(url: url, quality: quality, audioOnly: audioOnly, idx: 0) { r2 in
                             switch r2 {
                             case .success(let v): completion(.success(v))
-                            case .failure: self?.htmlScrape(url: url, completion: completion) ?? completion(.failure(ExError.allFailed("No extractor")))
+                            case .failure:
+                                if let strongSelf = self {
+                                    strongSelf.htmlScrape(url: url, completion: completion)
+                                } else {
+                                    completion(.failure(ExError.allFailed("No extractor")))
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // MARK: - Site Specific
             private func trySiteSpecific(url: String, site: VideoSourceType, quality: VideoQuality, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
                 switch site {
                 case .tiktok: tikTokExtract(url, completion: completion)
@@ -561,7 +563,6 @@ jobs:
                 }
             }
 
-            // MARK: - TikTok via TikWM
             private func tikTokExtract(_ url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
                 guard let api = URL(string: "https://tikwm.com/api/") else { completion(.failure(ExError.invalidURL)); return }
                 var req = URLRequest(url: api); req.httpMethod = "POST"
@@ -581,7 +582,6 @@ jobs:
                 }.resume()
             }
 
-            // MARK: - Twitter via fxtwitter
             private func twitterExtract(_ url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
                 let api = url.replacingOccurrences(of: "x.com", with: "api.fxtwitter.com").replacingOccurrences(of: "twitter.com", with: "api.fxtwitter.com")
                 guard let u = URL(string: api) else { completion(.failure(ExError.invalidURL)); return }
@@ -597,7 +597,6 @@ jobs:
                 }.resume()
             }
 
-            // MARK: - Reddit
             private func redditExtract(_ url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
                 var jurl = url; if !jurl.hasSuffix(".json") { jurl += (jurl.hasSuffix("/") ? ".json" : "/.json") }
                 guard let u = URL(string: jurl) else { completion(.failure(ExError.invalidURL)); return }
@@ -613,16 +612,16 @@ jobs:
                 }.resume()
             }
 
-            // MARK: - Instagram
             private func instagramExtract(_ url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
                 guard let u = URL(string: url) else { completion(.failure(ExError.invalidURL)); return }
                 var req = URLRequest(url: u)
                 req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
                 URLSession.shared.dataTask(with: req) { data, _, _ in
                     guard let data = data, let html = String(data: data, encoding: .utf8) else { completion(.failure(ExError.noStreams)); return }
-                    for p in ["\"video_url\":\"([^\"]+)\"", "\"contentUrl\":\"([^\"]+\\.mp4[^\"]*)\"", "property=\"og:video\" content=\"([^\"]+)\""] {
+                    let patterns = ["\"video_url\":\"([^\"]+)\"", "\"contentUrl\":\"([^\"]+\\.mp4[^\"]*)\"", "property=\"og:video\" content=\"([^\"]+)\""]
+                    for p in patterns {
                         if let rx = try? NSRegularExpression(pattern: p), let m = rx.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)), let r = Range(m.range(at: 1), in: html) {
-                            var vu = String(html[r]).replacingOccurrences(of: "\\u0026", with: "&").replacingOccurrences(of: "\\/", with: "/")
+                            let vu = String(html[r]).replacingOccurrences(of: "\\u0026", with: "&").replacingOccurrences(of: "\\/", with: "/")
                             if vu.hasPrefix("http") {
                                 completion(.success(ExtractedVideo(title: "Instagram Video", streams: [ExtractedStream(url: vu, quality: .p720, headers: ["Referer": "https://www.instagram.com/"], filename: nil, hasAudio: true)], thumbnail: nil, sourceType: .instagram)))
                                 return
@@ -633,7 +632,6 @@ jobs:
                 }.resume()
             }
 
-            // MARK: - Facebook
             private func facebookExtract(_ url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
                 let mu = url.replacingOccurrences(of: "www.facebook.com", with: "m.facebook.com").replacingOccurrences(of: "web.facebook.com", with: "m.facebook.com")
                 guard let u = URL(string: mu) else { completion(.failure(ExError.invalidURL)); return }
@@ -641,7 +639,13 @@ jobs:
                 URLSession.shared.dataTask(with: req) { data, _, _ in
                     guard let data = data, let html = String(data: data, encoding: .utf8) else { completion(.failure(ExError.noStreams)); return }
                     var streams: [ExtractedStream] = []; let hdrs = ["Referer": "https://www.facebook.com/"]
-                    for (p, q) in [("hd_src\":\"([^\"]+)\"", VideoQuality.p1080), ("sd_src\":\"([^\"]+)\"", VideoQuality.p480), ("browser_native_hd_url\":\"([^\"]+)\"", VideoQuality.p720), ("browser_native_sd_url\":\"([^\"]+)\"", VideoQuality.p480)] {
+                    let patterns: [(String, VideoQuality)] = [
+                        ("hd_src\":\"([^\"]+)\"", .p1080),
+                        ("sd_src\":\"([^\"]+)\"", .p480),
+                        ("browser_native_hd_url\":\"([^\"]+)\"", .p720),
+                        ("browser_native_sd_url\":\"([^\"]+)\"", .p480)
+                    ]
+                    for (p, q) in patterns {
                         if let rx = try? NSRegularExpression(pattern: p), let m = rx.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)), let r = Range(m.range(at: 1), in: html) {
                             let vu = String(html[r]).replacingOccurrences(of: "\\/", with: "/").replacingOccurrences(of: "\\u0025", with: "%").replacingOccurrences(of: "\\u0026", with: "&")
                             if !streams.contains(where: { $0.quality == q }) { streams.append(ExtractedStream(url: vu, quality: q, headers: hdrs, filename: nil, hasAudio: true)) }
@@ -651,7 +655,6 @@ jobs:
                 }.resume()
             }
 
-            // MARK: - Cobalt Chain
             private func tryCobaltChain(url: String, quality: VideoQuality, audioOnly: Bool, idx: Int, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
                 guard idx < cobaltMirrors.count else { completion(.failure(ExError.allFailed("Cobalt"))); return }
                 cobaltRequest(mirror: cobaltMirrors[idx], videoURL: url, quality: quality.cobaltValue, audioOnly: audioOnly) { [weak self] r in
@@ -691,19 +694,25 @@ jobs:
                 }.resume()
             }
 
-            // MARK: - HTML Scrape Fallback
             private func htmlScrape(url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
                 guard let u = URL(string: url) else { completion(.failure(ExError.invalidURL)); return }
                 var req = URLRequest(url: u); req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
                 URLSession.shared.dataTask(with: req) { data, _, _ in
                     guard let data = data, let html = String(data: data, encoding: .utf8) else { completion(.failure(ExError.allFailed("fetch"))); return }
                     var streams: [ExtractedStream] = []; var seen = Set<String>()
-                    for p in ["https?://[^\\s\"'<>\\\\]+\\.mp4[^\\s\"'<>\\\\]*", "https?://[^\\s\"'<>\\\\]+\\.m3u8[^\\s\"'<>\\\\]*", "\"contentUrl\"\\s*:\\s*\"([^\"]+)\"", "property=\"og:video\"\\s+content=\"([^\"]+)\"", "property=\"og:video:url\"\\s+content=\"([^\"]+)\""] {
+                    let patterns = [
+                        "https?://[^\\s\"'<>\\\\]+\\.mp4[^\\s\"'<>\\\\]*",
+                        "https?://[^\\s\"'<>\\\\]+\\.m3u8[^\\s\"'<>\\\\]*",
+                        "\"contentUrl\"\\s*:\\s*\"([^\"]+)\"",
+                        "property=\"og:video\"\\s+content=\"([^\"]+)\"",
+                        "property=\"og:video:url\"\\s+content=\"([^\"]+)\""
+                    ]
+                    for p in patterns {
                         if let rx = try? NSRegularExpression(pattern: p) {
                             for m in rx.matches(in: html, range: NSRange(html.startIndex..., in: html)).prefix(5) {
                                 let mr = m.numberOfRanges > 1 ? m.range(at: 1) : m.range
                                 if let r = Range(mr, in: html) {
-                                    var vu = String(html[r]).replacingOccurrences(of: "\\/", with: "/").replacingOccurrences(of: "\\u0026", with: "&")
+                                    let vu = String(html[r]).replacingOccurrences(of: "\\/", with: "/").replacingOccurrences(of: "\\u0026", with: "&")
                                     if vu.hasPrefix("http") && !seen.contains(vu) { seen.insert(vu); streams.append(ExtractedStream(url: vu, quality: .p720, headers: [:], filename: nil, hasAudio: true)) }
                                 }
                             }
@@ -747,7 +756,7 @@ jobs:
         SWIFTEOF
 
         # ============================================================
-        # FILE 9: BrowserView.swift (INTELLIGENT VIDEO CAPTURE)
+        # FILE 9: BrowserView.swift (FIXED - JS as concatenated strings)
         # ============================================================
         cat > VideoFlow/Views/BrowserView.swift << 'SWIFTEOF'
         import SwiftUI
@@ -768,8 +777,11 @@ jobs:
             func navigate(to raw: String) {
                 var s = raw.trimmingCharacters(in: .whitespaces)
                 if !s.hasPrefix("http://") && !s.hasPrefix("https://") {
-                    if s.contains(".") && !s.contains(" ") { s = "https://\(s)" }
-                    else { s = "https://www.google.com/search?q=\(s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s)" }
+                    if s.contains(".") && !s.contains(" ") { s = "https://" + s }
+                    else {
+                        let enc = s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s
+                        s = "https://www.google.com/search?q=" + enc
+                    }
                 }
                 guard let url = URL(string: s) else { return }
                 webView?.load(URLRequest(url: url)); urlText = s
@@ -787,7 +799,54 @@ jobs:
             }
         }
 
-        // MARK: - Smart WebView with Network Interception
+        struct DetectionJS {
+            static let source: String = {
+                var js = ""
+                js += "(function(){"
+                js += "var found=new Set();"
+                js += "function report(url,src){"
+                js += "if(url && !found.has(url) && (url.includes('.mp4')||url.includes('.m3u8')||url.includes('.webm')||url.includes('.mov')||url.includes('googlevideo')||url.includes('fbcdn.net')||url.includes('cdninstagram')||url.includes('tiktokcdn'))){"
+                js += "found.add(url);"
+                js += "try{window.webkit.messageHandlers.videoCapture.postMessage({url:url,source:src});}catch(e){}"
+                js += "}"
+                js += "}"
+                js += "function scanVideos(){"
+                js += "document.querySelectorAll('video').forEach(function(v){"
+                js += "if(v.src)report(v.src,'video-tag');"
+                js += "if(v.currentSrc)report(v.currentSrc,'video-currentSrc');"
+                js += "v.querySelectorAll('source').forEach(function(s){if(s.src)report(s.src,'source-tag');});"
+                js += "});"
+                js += "try{document.querySelectorAll('iframe').forEach(function(f){try{f.contentDocument.querySelectorAll('video').forEach(function(v){if(v.src)report(v.src,'iframe-video');});}catch(e){}});}catch(e){}"
+                js += "}"
+                js += "var oFetch=window.fetch;"
+                js += "window.fetch=function(){"
+                js += "var url=typeof arguments[0]==='string'?arguments[0]:(arguments[0]&&arguments[0].url?arguments[0].url:'');"
+                js += "report(url,'fetch');"
+                js += "return oFetch.apply(this,arguments);"
+                js += "};"
+                js += "var oXHR=XMLHttpRequest.prototype.open;"
+                js += "XMLHttpRequest.prototype.open=function(m,url){"
+                js += "report(url,'xhr');"
+                js += "return oXHR.apply(this,arguments);"
+                js += "};"
+                js += "var obs=new MutationObserver(function(){scanVideos();});"
+                js += "if(document.body)obs.observe(document.body,{childList:true,subtree:true});"
+                js += "if(window.MediaSource){"
+                js += "var oAB=MediaSource.prototype.addSourceBuffer;"
+                js += "MediaSource.prototype.addSourceBuffer=function(m){"
+                js += "try{window.webkit.messageHandlers.videoCapture.postMessage({url:'mediasource://'+m,source:'mediasource'});}catch(e){}"
+                js += "return oAB.apply(this,arguments);"
+                js += "};"
+                js += "}"
+                js += "window._vfScan=scanVideos;"
+                js += "setInterval(scanVideos,3000);"
+                js += "setTimeout(scanVideos,1500);"
+                js += "setTimeout(scanVideos,5000);"
+                js += "})();"
+                return js
+            }()
+        }
+
         struct SmartWebView: UIViewRepresentable {
             @ObservedObject var vm: BrowserVM
 
@@ -795,13 +854,9 @@ jobs:
                 let cfg = WKWebViewConfiguration()
                 cfg.allowsInlineMediaPlayback = true
                 cfg.mediaTypesRequiringUserActionForPlayback = []
-
-                // Inject intelligent video detection script
-                let js = WKUserScript(source: Self.smartDetectionJS, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
-                cfg.userContentController.addUserScript(js)
+                let script = WKUserScript(source: DetectionJS.source, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
+                cfg.userContentController.addUserScript(script)
                 cfg.userContentController.add(context.coordinator, name: "videoCapture")
-
-                // URL scheme handler for network sniffing
                 let wv = WKWebView(frame: .zero, configuration: cfg)
                 wv.navigationDelegate = context.coordinator
                 wv.uiDelegate = context.coordinator
@@ -814,80 +869,6 @@ jobs:
             func updateUIView(_ wv: WKWebView, context: Context) {}
             func makeCoordinator() -> Coordinator { Coordinator(vm: vm) }
 
-            // MARK: - Ultra Smart JS (detects videos everywhere)
-            static var smartDetectionJS: String { """
-            (function(){
-              var found=new Set();
-              function report(url,src){
-                if(url && !found.has(url) && (url.includes('.mp4')||url.includes('.m3u8')||url.includes('.webm')||url.includes('.mov')||url.includes('video')||url.includes('googlevideo')||url.includes('fbcdn.net')||url.includes('cdninstagram')||url.includes('tiktokcdn'))){
-                  found.add(url);
-                  window.webkit.messageHandlers.videoCapture.postMessage({url:url,source:src});
-                }
-              }
-
-              // 1. Scan <video> tags
-              function scanVideos(){
-                document.querySelectorAll('video').forEach(function(v){
-                  if(v.src) report(v.src,'video-tag');
-                  if(v.currentSrc) report(v.currentSrc,'video-currentSrc');
-                  v.querySelectorAll('source').forEach(function(s){ if(s.src) report(s.src,'source-tag'); });
-                  // Check blob URLs
-                  if(v.src && v.src.startsWith('blob:')){ try { report(v.src,'blob'); } catch(e){} }
-                });
-                // Scan iframes
-                try { document.querySelectorAll('iframe').forEach(function(f){ try { f.contentDocument.querySelectorAll('video').forEach(function(v){ if(v.src) report(v.src,'iframe-video'); }); } catch(e){} }); } catch(e){}
-              }
-
-              // 2. Intercept fetch
-              var oFetch=window.fetch;
-              window.fetch=function(){
-                var url=typeof arguments[0]==='string'?arguments[0]:(arguments[0]&&arguments[0].url?arguments[0].url:'');
-                report(url,'fetch');
-                return oFetch.apply(this,arguments);
-              };
-
-              // 3. Intercept XMLHttpRequest
-              var oXHR=XMLHttpRequest.prototype.open;
-              XMLHttpRequest.prototype.open=function(m,url){
-                report(url,'xhr');
-                return oXHR.apply(this,arguments);
-              };
-
-              // 4. Intercept createElement (catches dynamic video creation)
-              var oCE=document.createElement;
-              document.createElement=function(tag){
-                var el=oCE.apply(this,arguments);
-                if(tag.toLowerCase()==='video'||tag.toLowerCase()==='source'){
-                  var oSS=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'src');
-                  if(oSS&&oSS.set){
-                    var origSet=oSS.set;
-                    Object.defineProperty(el,'src',{set:function(v){report(v,'dynamic-'+tag);origSet.call(this,v);},get:oSS.get});
-                  }
-                }
-                return el;
-              };
-
-              // 5. MutationObserver for dynamic content
-              var obs=new MutationObserver(function(){ scanVideos(); });
-              if(document.body) obs.observe(document.body,{childList:true,subtree:true});
-
-              // 6. Intercept MediaSource
-              if(window.MediaSource){
-                var oAB=MediaSource.prototype.addSourceBuffer;
-                MediaSource.prototype.addSourceBuffer=function(m){
-                  window.webkit.messageHandlers.videoCapture.postMessage({url:'mediasource://'+m,source:'mediasource'});
-                  return oAB.apply(this,arguments);
-                };
-              }
-
-              // 7. Periodic scan
-              window._vfScan=scanVideos;
-              setInterval(scanVideos,3000);
-              setTimeout(scanVideos,1500);
-              setTimeout(scanVideos,5000);
-            })();
-            """ }
-
             class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
                 let vm: BrowserVM
                 init(vm: BrowserVM) { self.vm = vm }
@@ -899,17 +880,23 @@ jobs:
                 }
 
                 func webView(_ wv: WKWebView, didStartProvisionalNavigation _: WKNavigation!) {
-                    vm.isLoading = true; vm.capturedURLs = []; vm.networkCaptures = []
+                    vm.isLoading = true
+                    vm.capturedURLs = []
+                    vm.networkCaptures = []
                 }
 
                 func webView(_ wv: WKWebView, didFinish _: WKNavigation!) {
-                    vm.isLoading = false; vm.canGoBack = wv.canGoBack; vm.canGoForward = wv.canGoForward
-                    vm.urlText = wv.url?.absoluteString ?? ""; vm.isSecure = wv.url?.scheme == "https"
+                    vm.isLoading = false
+                    vm.canGoBack = wv.canGoBack
+                    vm.canGoForward = wv.canGoForward
+                    vm.urlText = wv.url?.absoluteString ?? ""
+                    vm.isSecure = wv.url?.scheme == "https"
                 }
 
-                func webView(_ wv: WKWebView, didFail _: WKNavigation!, withError _: Error) { vm.isLoading = false }
+                func webView(_ wv: WKWebView, didFail _: WKNavigation!, withError _: Error) {
+                    vm.isLoading = false
+                }
 
-                // Intercept ALL navigation requests to catch video URLs
                 func webView(_ wv: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
                     if let url = action.request.url?.absoluteString {
                         let lower = url.lowercased()
@@ -920,22 +907,24 @@ jobs:
                     decisionHandler(.allow)
                 }
 
-                // Intercept response to detect video content types
                 func webView(_ wv: WKWebView, decidePolicyFor response: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
-                    if let mime = response.response.mimeType?.lowercased(),
-                       (mime.contains("video") || mime.contains("mpegurl") || mime.contains("mp2t")) {
-                        if let url = response.response.url?.absoluteString { vm.addCapture(url) }
+                    if let mime = response.response.mimeType?.lowercased() {
+                        if mime.contains("video") || mime.contains("mpegurl") || mime.contains("mp2t") {
+                            if let url = response.response.url?.absoluteString {
+                                vm.addCapture(url)
+                            }
+                        }
                     }
                     decisionHandler(.allow)
                 }
 
                 func webView(_ wv: WKWebView, createWebViewWith _: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-                    if action.targetFrame == nil { wv.load(action.request) }; return nil
+                    if action.targetFrame == nil { wv.load(action.request) }
+                    return nil
                 }
             }
         }
 
-        // MARK: - Browser View
         struct BrowserView: View {
             @StateObject private var vm = BrowserVM()
             @EnvironmentObject var dm: DownloadManager
@@ -953,7 +942,9 @@ jobs:
                         Color.black.ignoresSafeArea()
                         VStack(spacing: 0) {
                             addressBar
-                            if vm.isLoading { ProgressView().progressViewStyle(.linear).tint(.blue).frame(height: 2) }
+                            if vm.isLoading {
+                                ProgressView().progressViewStyle(.linear).tint(.blue).frame(height: 2)
+                            }
                             SmartWebView(vm: vm).ignoresSafeArea(edges: .bottom)
                             bottomBar
                         }
@@ -972,51 +963,94 @@ jobs:
                     Button("Audio MP3") { doExtract(.audio, audio: true) }
                     Button("Cancel", role: .cancel) {}
                 }
-                .alert("VideoFlow", isPresented: $showMsg) { Button("OK") {} } message: { Text(msg ?? "") }
-                .sheet(isPresented: $showCaptured) { CapturedSheet(urls: vm.capturedURLs, dm: dm) }
+                .alert("VideoFlow", isPresented: $showMsg) {
+                    Button("OK") {}
+                } message: {
+                    Text(msg ?? "")
+                }
+                .sheet(isPresented: $showCaptured) {
+                    CapturedSheet(urls: vm.capturedURLs, dm: dm)
+                }
                 .sheet(isPresented: $showStreams) {
-                    if let r = extractResult { StreamsSheet(video: r) { s, q in downloadStream(s, q, r) } }
+                    if let r = extractResult {
+                        StreamsSheet(video: r) { s, q in downloadStream(s, q, r) }
+                    }
                 }
             }
 
             var addressBar: some View {
                 HStack(spacing: 8) {
                     HStack(spacing: 6) {
-                        Image(systemName: vm.isSecure ? "lock.fill" : "lock.open.fill").foregroundColor(vm.isSecure ? .green : .orange).font(.system(size: 12))
-                        TextField("Search or URL...", text: $vm.urlText).foregroundColor(.white).font(.system(size: 14)).keyboardType(.URL).autocapitalization(.none).disableAutocorrection(true).onSubmit { vm.navigate(to: vm.urlText) }
-                        if !vm.urlText.isEmpty { Button { vm.urlText = "" } label: { Image(systemName: "xmark.circle.fill").foregroundColor(.gray).font(.system(size: 14)) } }
-                    }.padding(.horizontal, 10).padding(.vertical, 8).background(Color.white.opacity(0.1)).cornerRadius(10)
-                    Button { vm.navigate(to: vm.urlText) } label: { Text("Go").foregroundColor(.blue).font(.system(size: 14, weight: .semibold)) }
-                }.padding(.horizontal, 12).padding(.vertical, 8)
+                        Image(systemName: vm.isSecure ? "lock.fill" : "lock.open.fill")
+                            .foregroundColor(vm.isSecure ? .green : .orange)
+                            .font(.system(size: 12))
+                        TextField("Search or URL...", text: $vm.urlText)
+                            .foregroundColor(.white)
+                            .font(.system(size: 14))
+                            .keyboardType(.URL)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            .onSubmit { vm.navigate(to: vm.urlText) }
+                        if !vm.urlText.isEmpty {
+                            Button { vm.urlText = "" } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.gray)
+                                    .font(.system(size: 14))
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.white.opacity(0.1))
+                    .cornerRadius(10)
+                    Button { vm.navigate(to: vm.urlText) } label: {
+                        Text("Go").foregroundColor(.blue).font(.system(size: 14, weight: .semibold))
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
 
             var bottomBar: some View {
                 HStack(spacing: 4) {
                     bBtn("chevron.left", on: vm.canGoBack) { vm.goBack() }
                     bBtn("chevron.right", on: vm.canGoForward) { vm.goForward() }
-                    bBtn(vm.isLoading ? "xmark" : "arrow.clockwise", on: true) { vm.isLoading ? vm.stop() : vm.reload() }
+                    bBtn(vm.isLoading ? "xmark" : "arrow.clockwise", on: true) {
+                        vm.isLoading ? vm.stop() : vm.reload()
+                    }
                     Spacer()
-                    // Captured count badge
                     if !vm.capturedURLs.isEmpty {
                         Button { showCaptured = true } label: {
                             HStack(spacing: 3) {
                                 Image(systemName: "antenna.radiowaves.left.and.right").font(.system(size: 12))
                                 Text("\(vm.capturedURLs.count)").font(.system(size: 11, weight: .bold))
-                            }.foregroundColor(.white).padding(.horizontal, 8).padding(.vertical, 6).background(Color.green).cornerRadius(14)
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(Color.green)
+                            .cornerRadius(14)
                         }
                     }
-                    // Download button
                     Button { showQuality = true } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "arrow.down.circle.fill").font(.system(size: 15))
                             Text("Download").font(.system(size: 12, weight: .bold))
-                        }.foregroundColor(.white).padding(.horizontal, 12).padding(.vertical, 8)
-                        .background(LinearGradient(colors: [.red, .orange], startPoint: .leading, endPoint: .trailing)).cornerRadius(18)
-                    }.disabled(isExtracting)
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(LinearGradient(colors: [.red, .orange], startPoint: .leading, endPoint: .trailing))
+                        .cornerRadius(18)
+                    }
+                    .disabled(isExtracting)
                     Spacer()
                     bBtn("house.fill", on: true) { vm.navigate(to: "https://www.google.com") }
                     bBtn("square.and.arrow.up", on: true) { shareURL() }
-                }.padding(.horizontal, 12).padding(.vertical, 8).background(Color.white.opacity(0.05))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.white.opacity(0.05))
             }
 
             var extractingOverlay: some View {
@@ -1025,16 +1059,27 @@ jobs:
                         ProgressView().tint(.white).scaleEffect(1.8)
                         Text("Extracting Video...").foregroundColor(.white).font(.headline)
                         Text("Trying multiple servers").foregroundColor(.gray).font(.caption)
-                    }.padding(30).background(RoundedRectangle(cornerRadius: 18).fill(Color(.systemGray6).opacity(0.95)))
+                    }
+                    .padding(30)
+                    .background(RoundedRectangle(cornerRadius: 18).fill(Color(.systemGray6).opacity(0.95)))
                 )
             }
 
             func bBtn(_ icon: String, on: Bool, action: @escaping () -> Void) -> some View {
-                Button(action: action) { Image(systemName: icon).font(.system(size: 18)).foregroundColor(on ? .white : .gray.opacity(0.3)).frame(width: 38, height: 38) }.disabled(!on)
+                Button(action: action) {
+                    Image(systemName: icon).font(.system(size: 18))
+                        .foregroundColor(on ? .white : .gray.opacity(0.3))
+                        .frame(width: 38, height: 38)
+                }
+                .disabled(!on)
             }
 
             func doExtract(_ q: VideoQuality, audio: Bool = false) {
-                guard let url = vm.webView?.url?.absoluteString else { msg = "No URL"; showMsg = true; return }
+                guard let url = vm.webView?.url?.absoluteString else {
+                    msg = "No URL"
+                    showMsg = true
+                    return
+                }
                 isExtracting = true
                 UltimateExtractor.shared.extract(from: url, quality: q, audioOnly: audio) { r in
                     DispatchQueue.main.async {
@@ -1043,12 +1088,18 @@ jobs:
                         case .success(let v):
                             if v.streams.count == 1 {
                                 downloadStream(v.streams[0], q, v)
-                                msg = "✅ Download started!\n\(v.title)"; showMsg = true
-                            } else { extractResult = v; showStreams = true }
+                                msg = "Download started!\n" + v.title
+                                showMsg = true
+                            } else {
+                                extractResult = v
+                                showStreams = true
+                            }
                         case .failure(let e):
                             if !vm.capturedURLs.isEmpty {
-                                msg = "⚠️ Extraction failed but \(vm.capturedURLs.count) video(s) captured from browser.\nTap the green badge to download them."
-                            } else { msg = "❌ \(e.localizedDescription)\n\nTips:\n• Play the video first\n• Try different quality\n• Check the green capture badge" }
+                                msg = "Extraction failed but " + String(vm.capturedURLs.count) + " video(s) captured. Tap green badge to download."
+                            } else {
+                                msg = "Failed: " + e.localizedDescription + "\n\nTips:\n- Play the video first\n- Try different quality\n- Check the green capture badge"
+                            }
                             showMsg = true
                         }
                     }
@@ -1056,21 +1107,33 @@ jobs:
             }
 
             func downloadStream(_ s: ExtractedStream, _ q: VideoQuality, _ v: ExtractedVideo) {
-                let video = VideoItem(id: UUID().uuidString, title: v.title, url: s.url, thumbnailURL: v.thumbnail, availableQualities: [q], sourceType: v.sourceType, headers: s.headers)
+                let video = VideoItem(
+                    id: UUID().uuidString,
+                    title: v.title,
+                    url: s.url,
+                    thumbnailURL: v.thumbnail,
+                    availableQualities: [q],
+                    sourceType: v.sourceType,
+                    headers: s.headers
+                )
                 dm.startDownload(video: video, quality: q)
             }
 
             func shareURL() {
                 guard let url = vm.webView?.url else { return }
                 let vc = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-                if let sc = UIApplication.shared.connectedScenes.first as? UIWindowScene, let root = sc.windows.first?.rootViewController { root.present(vc, animated: true) }
+                if let sc = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let root = sc.windows.first?.rootViewController {
+                    root.present(vc, animated: true)
+                }
             }
         }
 
-        // MARK: - Captured URLs Sheet
         struct CapturedSheet: View {
-            let urls: [String]; let dm: DownloadManager
+            let urls: [String]
+            let dm: DownloadManager
             @Environment(\.dismiss) var dismiss
+
             var body: some View {
                 NavigationView {
                     List {
@@ -1078,35 +1141,67 @@ jobs:
                             ForEach(urls, id: \.self) { url in
                                 HStack {
                                     VStack(alignment: .leading, spacing: 3) {
-                                        Text(url.contains("googlevideo") ? "YouTube Stream" : url.contains(".m3u8") ? "HLS Stream" : "Video").font(.system(size: 13, weight: .medium))
+                                        Text(labelFor(url)).font(.system(size: 13, weight: .medium))
                                         Text(String(url.prefix(80))).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(2)
                                     }
                                     Spacer()
                                     Button {
-                                        let v = VideoItem(id: UUID().uuidString, title: "Captured Video", url: url, availableQualities: [.p720], sourceType: url.contains(".m3u8") ? .hls : .direct)
-                                        dm.startDownload(video: v, quality: .p720); dismiss()
-                                    } label: { Image(systemName: "arrow.down.circle.fill").font(.system(size: 26)).foregroundColor(.blue) }
+                                        let v = VideoItem(
+                                            id: UUID().uuidString,
+                                            title: "Captured Video",
+                                            url: url,
+                                            availableQualities: [.p720],
+                                            sourceType: url.contains(".m3u8") ? .hls : .direct
+                                        )
+                                        dm.startDownload(video: v, quality: .p720)
+                                        dismiss()
+                                    } label: {
+                                        Image(systemName: "arrow.down.circle.fill").font(.system(size: 26)).foregroundColor(.blue)
+                                    }
                                 }
                             }
                         }
                     }
-                    .navigationTitle("Captured Videos").navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() } } }
+                    .navigationTitle("Captured Videos")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .navigationBarTrailing) {
+                            Button("Done") { dismiss() }
+                        }
+                    }
                 }
+            }
+
+            func labelFor(_ url: String) -> String {
+                if url.contains("googlevideo") { return "YouTube Stream" }
+                if url.contains(".m3u8") { return "HLS Stream" }
+                if url.contains("fbcdn") { return "Facebook Video" }
+                if url.contains("cdninstagram") { return "Instagram Video" }
+                if url.contains("tiktokcdn") { return "TikTok Video" }
+                return "Video"
             }
         }
 
-        // MARK: - Streams Sheet
         struct StreamsSheet: View {
-            let video: ExtractedVideo; let onSelect: (ExtractedStream, VideoQuality) -> Void
+            let video: ExtractedVideo
+            let onSelect: (ExtractedStream, VideoQuality) -> Void
             @Environment(\.dismiss) var dismiss
+
             var body: some View {
                 NavigationView {
                     List {
-                        Section { HStack { Image(systemName: "info.circle.fill").foregroundColor(.blue); Text(video.title).font(.system(size: 14, weight: .medium)).lineLimit(2) } }
+                        Section {
+                            HStack {
+                                Image(systemName: "info.circle.fill").foregroundColor(.blue)
+                                Text(video.title).font(.system(size: 14, weight: .medium)).lineLimit(2)
+                            }
+                        }
                         Section("Streams (\(video.streams.count))") {
                             ForEach(Array(video.streams.enumerated()), id: \.offset) { i, s in
-                                Button { onSelect(s, s.quality); dismiss() } label: {
+                                Button {
+                                    onSelect(s, s.quality)
+                                    dismiss()
+                                } label: {
                                     HStack {
                                         VStack(alignment: .leading, spacing: 3) {
                                             Text(s.quality.displayName).font(.system(size: 15, weight: .semibold)).foregroundColor(.primary)
@@ -1120,8 +1215,13 @@ jobs:
                             }
                         }
                     }
-                    .navigationTitle("Choose Stream").navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Cancel") { dismiss() } } }
+                    .navigationTitle("Choose Stream")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .navigationBarTrailing) {
+                            Button("Cancel") { dismiss() }
+                        }
+                    }
                 }
             }
         }
@@ -1157,7 +1257,10 @@ jobs:
         }
 
         struct ActiveRow: View {
-            @ObservedObject var task: DownloadTask; let onP: () -> Void; let onR: () -> Void; let onC: () -> Void
+            @ObservedObject var task: DownloadTask
+            let onP: () -> Void
+            let onR: () -> Void
+            let onC: () -> Void
             var body: some View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -1188,10 +1291,17 @@ jobs:
         }
 
         struct DoneRow: View {
-            let task: DownloadTask; let onPlay: () -> Void; let onDel: () -> Void
+            let task: DownloadTask
+            let onPlay: () -> Void
+            let onDel: () -> Void
             var body: some View {
                 HStack(spacing: 12) {
-                    Button(action: onPlay) { ZStack { RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.2)).frame(width: 75, height: 48); Image(systemName: "play.circle.fill").foregroundColor(.blue).font(.system(size: 26)) } }
+                    Button(action: onPlay) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.2)).frame(width: 75, height: 48)
+                            Image(systemName: "play.circle.fill").foregroundColor(.blue).font(.system(size: 26))
+                        }
+                    }
                     VStack(alignment: .leading, spacing: 4) {
                         Text(task.video.title).font(.system(size: 14, weight: .medium)).lineLimit(2)
                         Text(task.quality.rawValue).font(.caption).foregroundColor(.white).padding(.horizontal, 6).padding(.vertical, 2).background(task.quality.color).cornerRadius(4)
@@ -1206,9 +1316,15 @@ jobs:
         }
 
         struct EmptyV: View {
-            let icon, t, s: String
+            let icon: String
+            let t: String
+            let s: String
             var body: some View {
-                VStack(spacing: 14) { Image(systemName: icon).font(.system(size: 50)).foregroundColor(.gray.opacity(0.5)); Text(t).font(.title3).fontWeight(.semibold); Text(s).font(.subheadline).foregroundColor(.secondary) }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 14) {
+                    Image(systemName: icon).font(.system(size: 50)).foregroundColor(.gray.opacity(0.5))
+                    Text(t).font(.title3).fontWeight(.semibold)
+                    Text(s).font(.subheadline).foregroundColor(.secondary)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         SWIFTEOF
@@ -1244,8 +1360,11 @@ jobs:
                 .onAppear { pm.playVideo(video); startT() }
                 .gesture(DragGesture().onChanged { v in
                     let d = v.translation.height / 500
-                    if v.startLocation.x < UIScreen.main.bounds.width / 2 { brightness = max(0, min(1, brightness - d)); UIScreen.main.brightness = brightness }
-                    else { pm.setVolume(max(0, min(1, pm.volume - Float(d)))) }
+                    if v.startLocation.x < UIScreen.main.bounds.width / 2 {
+                        brightness = max(0, min(1, brightness - d)); UIScreen.main.brightness = brightness
+                    } else {
+                        pm.setVolume(max(0, min(1, pm.volume - Float(d))))
+                    }
                 })
                 .sheet(isPresented: $showSpd) { SpdPicker().environmentObject(pm).presentationDetents([.height(300)]) }
             }
@@ -1273,15 +1392,21 @@ jobs:
                     Spacer()
                     VStack(spacing: 8) {
                         Slider(value: Binding(get: { pm.currentTime }, set: { pm.seek(to: $0) }), in: 0...max(pm.duration, 1)).accentColor(.white)
-                        HStack { Text(pm.fmt(pm.currentTime)).font(.caption).foregroundColor(.white.opacity(0.8)); Spacer(); Text(pm.fmt(pm.duration)).font(.caption).foregroundColor(.white.opacity(0.8)) }
+                        HStack {
+                            Text(pm.fmt(pm.currentTime)).font(.caption).foregroundColor(.white.opacity(0.8))
+                            Spacer()
+                            Text(pm.fmt(pm.duration)).font(.caption).foregroundColor(.white.opacity(0.8))
+                        }
                         HStack(spacing: 8) {
                             Button { pm.isMuted.toggle(); pm.player?.isMuted = pm.isMuted } label: { Image(systemName: pm.isMuted ? "speaker.slash.fill" : "speaker.fill").foregroundColor(.white) }
                             Slider(value: Binding(get: { Double(pm.volume) }, set: { pm.setVolume(Float($0)) }), in: 0...1).accentColor(.white)
                             Image(systemName: "speaker.wave.3.fill").foregroundColor(.white)
                         }
                     }.padding(.horizontal, 18).padding(.bottom, 28)
-                }.background(LinearGradient(colors: [.black.opacity(0.7), .clear, .clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom))
-                .transition(.opacity).animation(.easeInOut(duration: 0.2), value: showCtrl)
+                }
+                .background(LinearGradient(colors: [.black.opacity(0.7), .clear, .clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom))
+                .transition(.opacity)
+                .animation(.easeInOut(duration: 0.2), value: showCtrl)
             }
 
             func toggle() { withAnimation { showCtrl.toggle() }; if showCtrl { startT() } else { timer?.invalidate() } }
@@ -1301,13 +1426,21 @@ jobs:
         }
 
         struct SpdPicker: View {
-            @EnvironmentObject var pm: PlayerManager; @Environment(\.dismiss) var dismiss
+            @EnvironmentObject var pm: PlayerManager
+            @Environment(\.dismiss) var dismiss
             let speeds: [Float] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
             var body: some View {
                 NavigationView {
                     List(speeds, id: \.self) { s in
-                        Button { pm.setSpeed(s); dismiss() } label: { HStack { Text(String(format: "%.2fx", s)); Spacer(); if pm.playbackSpeed == s { Image(systemName: "checkmark").foregroundColor(.blue) } } }
-                    }.navigationTitle("Speed").navigationBarTitleDisplayMode(.inline)
+                        Button { pm.setSpeed(s); dismiss() } label: {
+                            HStack {
+                                Text(String(format: "%.2fx", s))
+                                Spacer()
+                                if pm.playbackSpeed == s { Image(systemName: "checkmark").foregroundColor(.blue) }
+                            }
+                        }
+                    }
+                    .navigationTitle("Speed").navigationBarTitleDisplayMode(.inline)
                     .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() } } }
                 }
             }
@@ -1317,15 +1450,26 @@ jobs:
             @EnvironmentObject var pm: PlayerManager
             var body: some View {
                 HStack(spacing: 10) {
-                    ZStack { RoundedRectangle(cornerRadius: 6).fill(Color.blue.opacity(0.3)).frame(width: 50, height: 34); Image(systemName: "play.fill").foregroundColor(.blue).font(.system(size: 13)) }
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 6).fill(Color.blue.opacity(0.3)).frame(width: 50, height: 34)
+                        Image(systemName: "play.fill").foregroundColor(.blue).font(.system(size: 13))
+                    }
                     VStack(alignment: .leading, spacing: 3) {
                         Text(pm.currentVideo?.video.title ?? "").font(.system(size: 12, weight: .medium)).foregroundColor(.white).lineLimit(1)
-                        GeometryReader { g in ZStack(alignment: .leading) { Capsule().fill(Color.white.opacity(0.2)).frame(height: 2); Capsule().fill(Color.blue).frame(width: g.size.width * pm.progress, height: 2) } }.frame(height: 2)
+                        GeometryReader { g in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Color.white.opacity(0.2)).frame(height: 2)
+                                Capsule().fill(Color.blue).frame(width: g.size.width * pm.progress, height: 2)
+                            }
+                        }.frame(height: 2)
                     }
                     Spacer()
                     Button { pm.togglePlayPause() } label: { Image(systemName: pm.isPlaying ? "pause.fill" : "play.fill").foregroundColor(.white).font(.system(size: 16)) }
                     Button { pm.close() } label: { Image(systemName: "xmark").foregroundColor(.white).font(.system(size: 14)) }
-                }.padding(.horizontal, 14).padding(.vertical, 8).background(RoundedRectangle(cornerRadius: 14).fill(Color(.systemGray6).opacity(0.95)).shadow(color: .black.opacity(0.3), radius: 8)).padding(.horizontal, 10)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color(.systemGray6).opacity(0.95)).shadow(color: .black.opacity(0.3), radius: 8))
+                .padding(.horizontal, 10)
                 .onTapGesture { pm.isFullScreen = true; pm.isMinimized = false }
             }
         }
@@ -1352,7 +1496,10 @@ jobs:
                                     ForEach(filtered) { t in
                                         Button { pm.playVideo(t) } label: {
                                             VStack(alignment: .leading, spacing: 5) {
-                                                ZStack { RoundedRectangle(cornerRadius: 10).fill(Color.blue.opacity(0.2)).aspectRatio(16/9, contentMode: .fit); Image(systemName: "play.circle.fill").font(.system(size: 36)).foregroundColor(.blue) }
+                                                ZStack {
+                                                    RoundedRectangle(cornerRadius: 10).fill(Color.blue.opacity(0.2)).aspectRatio(16/9, contentMode: .fit)
+                                                    Image(systemName: "play.circle.fill").font(.system(size: 36)).foregroundColor(.blue)
+                                                }
                                                 Text(t.video.title).font(.system(size: 12, weight: .medium)).foregroundColor(.primary).lineLimit(2).multilineTextAlignment(.leading)
                                                 Text(t.quality.rawValue).font(.system(size: 10, weight: .bold)).foregroundColor(.white).padding(.horizontal, 5).padding(.vertical, 2).background(t.quality.color).cornerRadius(4)
                                             }
@@ -1361,7 +1508,9 @@ jobs:
                                 }.padding()
                             }
                         }
-                    }.searchable(text: $search, prompt: "Search").navigationTitle("Library")
+                    }
+                    .searchable(text: $search, prompt: "Search")
+                    .navigationTitle("Library")
                 }
             }
         }
