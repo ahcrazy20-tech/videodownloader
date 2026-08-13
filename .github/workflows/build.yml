@@ -1,15 +1,13 @@
 name: Build iOS IPA
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:
+  workflow_dispatch:  # فقط عند التشغيل اليدوي
+  release:
+    types: [published]  # أو عند إنشاء release
 
 jobs:
   build:
-    runs-on: macos-13
+    runs-on: macos-14  # جرب macos-14 بدلاً من macos-13
     
     steps:
     - name: Checkout code
@@ -21,7 +19,6 @@ jobs:
     - name: Install dependencies
       run: |
         brew install ldid
-        brew install ffmpeg
         
     - name: Download yt-dlp
       run: |
@@ -29,52 +26,52 @@ jobs:
         curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o Resources/yt-dlp
         chmod +x Resources/yt-dlp
         
-    - name: Download FFmpeg for iOS
+    - name: Create Xcode Project Structure
       run: |
-        # استخدام FFmpeg prebuilt لـ iOS
-        curl -L https://github.com/kewlbear/FFmpeg-iOS/releases/latest/download/ffmpeg-ios.tar.gz -o ffmpeg.tar.gz
-        tar -xzf ffmpeg.tar.gz -C Resources/
+        mkdir -p MegaDownloader.xcodeproj
+        cat > MegaDownloader.xcodeproj/project.pbxproj << 'PBXEOF'
+// {
+//   objects = {
+//     /* Begin PBXBuildFile section */
+//     /* End PBXBuildFile section */
+//     /* Begin PBXFileReference section */
+//     /* End PBXFileReference section */
+//     /* Begin PBXGroup section */
+//     /* End PBXGroup section */
+//     /* Begin PBXNativeTarget section */
+//     /* End PBXNativeTarget section */
+//     /* Begin PBXProject section */
+//     /* End PBXProject section */
+//     /* Begin XCBuildConfiguration section */
+//     /* End XCBuildConfiguration section */
+//     /* Begin XCConfigurationList section */
+//     /* End XCConfigurationList section */
+//   };
+//   rootObject = ;
+// }
+PBXEOF
+
+    - name: Build with Swift Package Manager
+      run: |
+        # استخدام SPM بدلاً من xcodebuild
+        swift build -c release
         
-    - name: Build Project
-      run: |
-        xcodebuild -project MegaDownloader.xcodeproj \
-          -scheme MegaDownloader \
-          -sdk iphoneos \
-          -configuration Release \
-          -derivedDataPath build \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGNING_ALLOWED=NO \
-          PRODUCT_BUNDLE_IDENTIFIER="com.megadownloader.app"
-          
     - name: Create IPA
       run: |
-        mkdir -p Payload
-        cp -r build/Build/Products/Release-iphoneos/MegaDownloader.app Payload/
-        
-        # نسخ yt-dlp و ffmpeg إلى التطبيق
+        mkdir -p Payload/MegaDownloader.app
+        # نسخ الـ binary
+        cp .build/release/MegaDownloader Payload/MegaDownloader.app/
+        # نسخ الموارد
         cp Resources/yt-dlp Payload/MegaDownloader.app/
-        cp Resources/ffmpeg Payload/MegaDownloader.app/
+        cp Info.plist Payload/MegaDownloader.app/
         chmod +x Payload/MegaDownloader.app/yt-dlp
-        chmod +x Payload/MegaDownloader.app/ffmpeg
-        
-        # توقيع مع entitlements لـ TrollStore
+        # توقيع
         ldid -STrollStore.entitlements Payload/MegaDownloader.app/MegaDownloader
-        
         # إنشاء IPA
         zip -r MegaDownloader.ipa Payload
         
     - name: Upload IPA
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: MegaDownloader-iOS
         path: MegaDownloader.ipa
-        
-    - name: Create Release
-      if: github.ref == 'refs/heads/main'
-      uses: softprops/action-gh-release@v1
-      with:
-        files: MegaDownloader.ipa
-        tag_name: v${{ github.run_number }}
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
