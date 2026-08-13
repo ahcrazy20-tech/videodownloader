@@ -277,7 +277,7 @@ jobs:
         # ============================================================
         # FILE 5: DownloadManager.swift (FIXED FILE PERMISSIONS)
         # ============================================================
-        cat > VideoFlow/Services/DownloadManager.swift << 'SWIFTEOF'
+       cat > VideoFlow/Services/DownloadManager.swift << 'SWIFTEOF'
         import Foundation
         import UserNotifications
 
@@ -289,17 +289,19 @@ jobs:
 
             var backgroundCompletionHandler: (() -> Void)?
             private var urlSession: URLSession!
-            private var taskMap: [URLSessionTask: DownloadTask] = [:]
+            private var taskMap: [Int: DownloadTask] = [:]  // Use taskIdentifier instead
+            private var fileHandles: [Int: FileHandle] = [:]
+            private var destinationURLs: [Int: URL] = [:]
 
             override init() {
                 super.init()
-                let config = URLSessionConfiguration.background(withIdentifier: "com.videoflow.ultimate.v3")
-                config.isDiscretionary = false
-                config.sessionSendsLaunchEvents = true
+                // ✅ Use default session (foreground) - more reliable for file handling
+                let config = URLSessionConfiguration.default
                 config.allowsCellularAccess = true
-                config.httpMaximumConnectionsPerHost = 6
                 config.timeoutIntervalForRequest = 60
                 config.timeoutIntervalForResource = 3600
+                config.httpMaximumConnectionsPerHost = 6
+                config.waitsForConnectivity = true
                 urlSession = URLSession(configuration: config, delegate: self, delegateQueue: nil)
                 ensureDownloadsDirectoryExists()
                 loadSavedVideos()
@@ -310,21 +312,40 @@ jobs:
                 if !FileManager.default.fileExists(atPath: dir.path) {
                     do {
                         try FileManager.default.createDirectory(
-                            at: dir, withIntermediateDirectories: true,
-                            attributes: [.posixPermissions: 0o755]
+                            at: dir, withIntermediateDirectories: true, attributes: nil
                         )
+                        print("✅ Downloads directory created: \(dir.path)")
                     } catch {
-                        print("Failed to create directory: \(error)")
+                        print("❌ Failed to create directory: \(error)")
                     }
                 }
             }
 
             func startDownload(video: VideoItem, quality: VideoQuality, customURL: String? = nil, customHeaders: [String: String] = [:]) {
                 let downloadURL = customURL ?? video.url
-                guard let url = URL(string: downloadURL) else { return }
+                guard let url = URL(string: downloadURL) else {
+                    print("❌ Invalid URL: \(downloadURL)")
+                    return
+                }
 
                 let task = DownloadTask(video: video, quality: quality)
                 DispatchQueue.main.async { self.activeDownloads.append(task) }
+
+                // ✅ Prepare destination file
+                let safeName = sanitizeFileName(video.title)
+                let ext = quality == .audio ? "mp3" : "mp4"
+                let fileName = "\(safeName)_\(quality.rawValue)_\(Int(Date().timeIntervalSince1970)).\(ext)"
+                let destURL = getDownloadsDirectory().appendingPathComponent(fileName)
+
+                // Create empty file
+                FileManager.default.createFile(atPath: destURL.path, contents: nil, attributes: nil)
+                guard let fileHandle = try? FileHandle(forWritingTo: destURL) else {
+                    DispatchQueue.main.async {
+                        task.status = .failed(error: "Cannot create file")
+                        self.activeDownloads.removeAll { $0.id == task.id }
+                    }
+                    return
+                }
 
                 var request = URLRequest(url: url)
                 request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
@@ -341,26 +362,61 @@ jobs:
                     request.setValue("https://\(host)/", forHTTPHeaderField: "Referer")
                 }
 
-                let dlTask = urlSession.downloadTask(with: request)
-                task.urlSessionTask = dlTask
-                taskMap[dlTask] = task
-                dlTask.resume()
-                task.status = .downloading(progress: 0)
+                // ✅ Use dataTask for streaming download (more reliable)
+                let dataTask = urlSession.dataTask(with: request)
+                let taskId = dataTask.taskIdentifier
+                fileHandles[taskId] = fileHandle
+                destinationURLs[taskId] = destURL
+                taskMap[taskId] = task
+                task.urlSessionTask = nil  // We use dataTask instead
+
+                dataTask.resume()
+                DispatchQueue.main.async {
+                    task.status = .downloading(progress: 0)
+                }
             }
 
             func pauseDownload(_ task: DownloadTask) {
-                task.urlSessionTask?.cancel(byProducingResumeData: { _ in
-                    DispatchQueue.main.async { task.status = .paused }
-                })
+                // Find and cancel task
+                if let taskId = taskMap.first(where: { $0.value.id == task.id })?.key {
+                    urlSession.getAllTasks { tasks in
+                        for t in tasks where t.taskIdentifier == taskId {
+                            t.suspend()
+                            DispatchQueue.main.async { task.status = .paused }
+                        }
+                    }
+                }
             }
 
             func resumeDownload(_ task: DownloadTask) {
-                task.status = .downloading(progress: task.progress)
-                task.urlSessionTask?.resume()
+                if let taskId = taskMap.first(where: { $0.value.id == task.id })?.key {
+                    urlSession.getAllTasks { tasks in
+                        for t in tasks where t.taskIdentifier == taskId {
+                            t.resume()
+                            DispatchQueue.main.async { task.status = .downloading(progress: task.progress) }
+                        }
+                    }
+                }
             }
 
             func cancelDownload(_ task: DownloadTask) {
-                task.urlSessionTask?.cancel()
+                if let taskId = taskMap.first(where: { $0.value.id == task.id })?.key {
+                    urlSession.getAllTasks { tasks in
+                        for t in tasks where t.taskIdentifier == taskId {
+                            t.cancel()
+                        }
+                    }
+                    // Cleanup
+                    if let handle = fileHandles[taskId] {
+                        try? handle.close()
+                        fileHandles.removeValue(forKey: taskId)
+                    }
+                    if let destURL = destinationURLs[taskId] {
+                        try? FileManager.default.removeItem(at: destURL)
+                        destinationURLs.removeValue(forKey: taskId)
+                    }
+                    taskMap.removeValue(forKey: taskId)
+                }
                 DispatchQueue.main.async { self.activeDownloads.removeAll { $0.id == task.id } }
             }
 
@@ -374,28 +430,12 @@ jobs:
                 return paths[0].appendingPathComponent("VideoFlow", isDirectory: true)
             }
 
-            private func moveDownloadedFile(from location: URL, to destination: URL) throws {
-                let fm = FileManager.default
-                if fm.fileExists(atPath: destination.path) {
-                    try fm.removeItem(at: destination)
-                }
-                let parentDir = destination.deletingLastPathComponent()
-                if !fm.fileExists(atPath: parentDir.path) {
-                    try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
-                }
-                do {
-                    try fm.moveItem(at: location, to: destination)
-                } catch {
-                    try fm.copyItem(at: location, to: destination)
-                    try? fm.removeItem(at: location)
-                }
-                try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: destination.path)
-            }
-
             private func sanitizeFileName(_ name: String) -> String {
                 let invalidChars = CharacterSet(charactersIn: "/\\:*?\"<>|")
                 var cleaned = name.components(separatedBy: invalidChars).joined(separator: "_")
                 cleaned = cleaned.replacingOccurrences(of: " ", with: "_")
+                cleaned = cleaned.replacingOccurrences(of: "\n", with: "")
+                cleaned = cleaned.replacingOccurrences(of: "\r", with: "")
                 if cleaned.count > 50 { cleaned = String(cleaned.prefix(50)) }
                 return cleaned.isEmpty ? "video_\(Int(Date().timeIntervalSince1970))" : cleaned
             }
@@ -423,58 +463,6 @@ jobs:
                     }
                 }
             }
-        }
-
-        extension DownloadManager: URLSessionDownloadDelegate {
-            func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                            didFinishDownloadingTo location: URL) {
-                guard let task = taskMap[downloadTask] else { return }
-                let safeName = sanitizeFileName(task.video.title)
-                let ext = task.quality == .audio ? "mp3" : "mp4"
-                let fileName = "\(safeName)_\(task.quality.rawValue).\(ext)"
-                let destURL = getDownloadsDirectory().appendingPathComponent(fileName)
-                do {
-                    try moveDownloadedFile(from: location, to: destURL)
-                    DispatchQueue.main.async {
-                        task.savedURL = destURL
-                        task.status = .completed
-                        task.progress = 1.0
-                        self.activeDownloads.removeAll { $0.id == task.id }
-                        self.completedVideos.insert(task, at: 0)
-                        self.taskMap.removeValue(forKey: downloadTask)
-                        self.sendNotification(for: task)
-                    }
-                } catch {
-                    DispatchQueue.main.async {
-                        task.status = .failed(error: "Save failed: \(error.localizedDescription)")
-                        self.taskMap.removeValue(forKey: downloadTask)
-                    }
-                }
-            }
-
-            func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                            didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
-                            totalBytesExpectedToWrite: Int64) {
-                guard let task = taskMap[downloadTask] else { return }
-                DispatchQueue.main.async {
-                    task.updateProgress(bytesWritten: totalBytesWritten, totalBytes: totalBytesExpectedToWrite)
-                }
-            }
-
-            func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-                guard let dlTask = task as? URLSessionDownloadTask,
-                      let t = taskMap[dlTask], let error = error else { return }
-                if (error as NSError).code != NSURLErrorCancelled {
-                    DispatchQueue.main.async { t.status = .failed(error: error.localizedDescription) }
-                }
-            }
-
-            func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-                DispatchQueue.main.async {
-                    self.backgroundCompletionHandler?()
-                    self.backgroundCompletionHandler = nil
-                }
-            }
 
             private func sendNotification(for task: DownloadTask) {
                 let content = UNMutableNotificationContent()
@@ -485,8 +473,80 @@ jobs:
                 UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
             }
         }
-        SWIFTEOF
 
+        // MARK: - URLSessionDataDelegate (Stream download to file)
+        extension DownloadManager: URLSessionDataDelegate {
+
+            func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                            didReceive response: URLResponse,
+                            completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+                let taskId = dataTask.taskIdentifier
+                if let task = taskMap[taskId] {
+                    let totalBytes = response.expectedContentLength
+                    DispatchQueue.main.async {
+                        task.totalBytes = totalBytes
+                    }
+                }
+                completionHandler(.allow)
+            }
+
+            func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+                let taskId = dataTask.taskIdentifier
+                guard let task = taskMap[taskId],
+                      let fileHandle = fileHandles[taskId] else { return }
+
+                // Write chunk to file
+                do {
+                    try fileHandle.write(contentsOf: data)
+                    let currentBytes = task.downloadedBytes + Int64(data.count)
+                    DispatchQueue.main.async {
+                        task.updateProgress(bytesWritten: currentBytes, totalBytes: task.totalBytes)
+                    }
+                } catch {
+                    print("❌ Write error: \(error)")
+                }
+            }
+
+            func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+                let taskId = task.taskIdentifier
+                guard let dlTask = taskMap[taskId] else { return }
+
+                // Close file handle
+                if let handle = fileHandles[taskId] {
+                    try? handle.close()
+                    fileHandles.removeValue(forKey: taskId)
+                }
+
+                let destURL = destinationURLs[taskId]
+                destinationURLs.removeValue(forKey: taskId)
+                taskMap.removeValue(forKey: taskId)
+
+                if let error = error {
+                    // Failed - remove partial file
+                    if let url = destURL {
+                        try? FileManager.default.removeItem(at: url)
+                    }
+                    if (error as NSError).code != NSURLErrorCancelled {
+                        DispatchQueue.main.async {
+                            dlTask.status = .failed(error: error.localizedDescription)
+                        }
+                    }
+                } else {
+                    // ✅ Success!
+                    DispatchQueue.main.async {
+                        if let url = destURL {
+                            dlTask.savedURL = url
+                        }
+                        dlTask.status = .completed
+                        dlTask.progress = 1.0
+                        self.activeDownloads.removeAll { $0.id == dlTask.id }
+                        self.completedVideos.insert(dlTask, at: 0)
+                        self.sendNotification(for: dlTask)
+                    }
+                }
+            }
+        }
+        SWIFTEOF
         # ============================================================
         # FILE 6: PlayerManager.swift
         # ============================================================
