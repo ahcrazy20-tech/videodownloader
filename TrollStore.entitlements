@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>platform-application</key>
+    <true/>
+    <key>com.apple.private.security.no-sandbox</key>
+    <true/>
+    <key>com.apple.security.exception.files.absolute-path.read-write</key>
+    <array>
+        <string>/</string>
+    </array>
+    <key>com.apple.security.exception.iokit-user-client-class</key>
+    <array>
+        <string>AGXDeviceUserClient</string>
+        <string>IOSurfaceRootUserClient</string>
+    </array>
+    <key>get-task-allow</key>
+    <true/>
+    <key>com.apple.springboard.opensensitiveurl</key>
+    <true/>
+    <key>com.apple.CommCenter.fine-grained</key>
+    <array>
+        <string>spi</string>
+    </array>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>com.megadownloader.app</string>
+    </array>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+    <key>com.apple.UIKit.file-access.full</key>
+    <true/>
+</dict>
+</plist>
