@@ -1,4 +1,4 @@
-name: Build VideoFlow v7 IDM
+name: Build Video Downloader Pro
 
 on:
   push:
@@ -7,2657 +7,991 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
-    timeout-minutes: 120
+    runs-on: windows-latest
 
     steps:
-    - name: Checkout
+    - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Select Xcode 15
-      run: sudo xcode-select -s /Applications/Xcode_15.2.app
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
 
-    - name: Create Project Structure
+    # ============================================
+    # إنشاء كل ملفات المشروع تلقائياً
+    # ============================================
+
+    - name: Create requirements.txt
+      shell: pwsh
       run: |
-        mkdir -p VideoFlow/App
-        mkdir -p VideoFlow/Views
-        mkdir -p VideoFlow/Models
-        mkdir -p VideoFlow/Services
-        mkdir -p VideoFlow/Extractors
-        mkdir -p VideoFlow/AdBlock
-        mkdir -p VideoFlow/Resources/Assets.xcassets/AppIcon.appiconset
-        mkdir -p VideoFlow/Resources/Assets.xcassets/AccentColor.colorset
-        mkdir -p VideoFlow.xcodeproj
+        @"
+        yt-dlp>=2024.1.0
+        customtkinter>=5.2.0
+        CTkMessagebox>=2.5
+        pillow>=10.0.0
+        python-vlc>=3.0.18122
+        "@ | Out-File -FilePath requirements.txt -Encoding utf8
 
-    - name: Create All Source Files
+    # ==========================================
+    # ملف downloader.py - محرك التحميل
+    # ==========================================
+    - name: Create downloader.py
+      shell: pwsh
       run: |
-        # ==========================================
-        # 1. VideoFlowApp.swift
-        # ==========================================
-        cat > VideoFlow/App/VideoFlowApp.swift << 'SWIFTEOF'
-        import SwiftUI
+        @"
+        import yt_dlp
+        import threading
+        import os
+        import json
+        from datetime import datetime
 
-        @main
-        struct VideoFlowApp: App {
-            @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-            @StateObject private var downloadManager = DownloadManager.shared
-            @StateObject private var playerManager = PlayerManager.shared
 
-            var body: some Scene {
-                WindowGroup {
-                    ContentView()
-                        .environmentObject(downloadManager)
-                        .environmentObject(playerManager)
-                        .preferredColorScheme(.dark)
-                }
-            }
-        }
-        SWIFTEOF
+        class VideoDownloader:
 
-        # ==========================================
-        # 2. AppDelegate.swift
-        # ==========================================
-        cat > VideoFlow/App/AppDelegate.swift << 'SWIFTEOF'
-        import UIKit
-        import AVFoundation
-        import UserNotifications
+            def __init__(self):
+                self.is_downloading = False
+                self.is_cancelled = False
+                self.current_process = None
+                self.download_history_file = "download_history.json"
 
-        class AppDelegate: NSObject, UIApplicationDelegate {
-            func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-                do {
-                    try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [.allowAirPlay, .allowBluetooth])
-                    try AVAudioSession.sharedInstance().setActive(true)
-                } catch { print("Audio: \(error)") }
-                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
-                return true
-            }
-        }
-        SWIFTEOF
-
-        # ==========================================
-        # 3. VideoItem.swift
-        # ==========================================
-        cat > VideoFlow/Models/VideoItem.swift << 'SWIFTEOF'
-        import SwiftUI
-
-        enum VideoQuality: String, CaseIterable, Hashable {
-            case p2160 = "4K", p1440 = "1440p", p1080 = "1080p"
-            case p720 = "720p", p480 = "480p", p360 = "360p", p240 = "240p"
-            case audio = "Audio"
-
-            var displayName: String {
-                switch self {
-                case .p2160: return "4K Ultra HD"
-                case .p1440: return "2K QHD"
-                case .p1080: return "Full HD 1080p"
-                case .p720: return "HD 720p"
-                case .p480: return "SD 480p"
-                case .p360: return "Low 360p"
-                case .p240: return "Min 240p"
-                case .audio: return "Audio Only MP3"
-                }
-            }
-
-            var color: Color {
-                switch self {
-                case .p2160: return .purple
-                case .p1440: return .indigo
-                case .p1080: return .red
-                case .p720: return .orange
-                case .p480: return .green
-                case .p360: return .blue
-                case .p240: return .gray
-                case .audio: return .pink
-                }
-            }
-
-            var cobaltValue: String {
-                switch self {
-                case .p2160: return "2160"
-                case .p1440: return "1440"
-                case .p1080: return "1080"
-                case .p720: return "720"
-                case .p480: return "480"
-                case .p360: return "360"
-                case .p240: return "240"
-                case .audio: return "audio"
-                }
-            }
-        }
-
-        enum VideoSourceType: String {
-            case direct = "Direct MP4"
-            case hls = "HLS Stream"
-            case youtube = "YouTube"
-            case tiktok = "TikTok"
-            case instagram = "Instagram"
-            case facebook = "Facebook"
-            case twitter = "Twitter/X"
-            case reddit = "Reddit"
-            case vimeo = "Vimeo"
-            case other = "Web"
-        }
-
-        struct VideoItem: Identifiable, Equatable, Hashable {
-            let id: String
-            var title: String
-            let url: String
-            var thumbnailURL: String?
-            var duration: String?
-            var estimatedSize: String?
-            var availableQualities: [VideoQuality]
-            var sourceType: VideoSourceType
-            var headers: [String: String] = [:]
-            var isHLS: Bool { url.lowercased().contains(".m3u8") }
-            func hash(into hasher: inout Hasher) { hasher.combine(id) }
-            static func == (l: VideoItem, r: VideoItem) -> Bool { l.id == r.id }
-        }
-        SWIFTEOF
-
-        # ==========================================
-        # 4. DownloadTask.swift
-        # ==========================================
-        cat > VideoFlow/Models/DownloadTask.swift << 'SWIFTEOF'
-        import Foundation
-
-        enum DownloadStatus: Equatable {
-            case waiting
-            case downloading(progress: Double)
-            case converting
-            case paused
-            case completed
-            case failed(error: String)
-            var displayText: String {
-                switch self {
-                case .waiting: return "Waiting..."
-                case .downloading(let p): return "\(Int(p * 100))%"
-                case .converting: return "Processing..."
-                case .paused: return "Paused"
-                case .completed: return "Completed"
-                case .failed(let e): return "Failed: \(e)"
-                }
-            }
-        }
-
-        class DownloadTask: ObservableObject, Identifiable {
-            let id: String
-            let video: VideoItem
-            let quality: VideoQuality
-            @Published var status: DownloadStatus = .waiting
-            @Published var progress: Double = 0
-            @Published var downloadedBytes: Int64 = 0
-            @Published var totalBytes: Int64 = 0
-            @Published var speed: String = ""
-            @Published var activeThreads: Int = 0
-            @Published var savedURL: URL?
-            var sessionTaskId: Int?
-            private var lastBytes: Int64 = 0
-            private var lastTime: Date?
-
-            init(id: String = UUID().uuidString, video: VideoItem, quality: VideoQuality) {
-                self.id = id; self.video = video; self.quality = quality
-            }
-
-            func updateProgress(bytesWritten: Int64, totalExpected: Int64) {
-                let now = Date()
-                self.downloadedBytes = bytesWritten
-                self.totalBytes = totalExpected
-                if totalExpected > 0 { self.progress = min(1.0, Double(bytesWritten) / Double(totalExpected)) }
-                if let lt = lastTime {
-                    let elapsed = now.timeIntervalSince(lt)
-                    if elapsed >= 0.5 {
-                        let bps = Double(bytesWritten - lastBytes) / elapsed
-                        self.speed = formatSpeed(bps)
-                        self.lastBytes = bytesWritten
-                        self.lastTime = now
+            def get_video_info(self, url):
+                try:
+                    ydl_opts = {
+                        'quiet': True,
+                        'no_warnings': True,
+                        'extract_flat': False,
                     }
-                } else {
-                    self.lastTime = now
-                    self.lastBytes = bytesWritten
-                }
-                self.status = .downloading(progress: self.progress)
-            }
-            
-            private func formatSpeed(_ bps: Double) -> String {
-                if bps < 1024 { return "\(Int(bps)) B/s" }
-                if bps < 1048576 { return String(format: "%.1f KB/s", bps/1024) }
-                return String(format: "%.2f MB/s", bps/1048576)
-            }
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
 
-            var sizeText: String {
-                let fmt = ByteCountFormatter()
-                fmt.allowedUnits = [.useMB, .useGB]
-                fmt.countStyle = .file
-                if totalBytes > 0 {
-                    return "\(fmt.string(fromByteCount: downloadedBytes)) / \(fmt.string(fromByteCount: totalBytes))"
-                }
-                return fmt.string(fromByteCount: downloadedBytes)
-            }
-        }
-        SWIFTEOF
+                    formats = []
+                    seen = set()
 
-        # ==========================================
-        # 5. AdBlocker.swift (6-LAYER PROTECTION)
-        # ==========================================
-        cat > VideoFlow/AdBlock/AdBlocker.swift << 'SWIFTEOF'
-        import Foundation
-        import WebKit
+                    if info.get('formats'):
+                        for f in info['formats']:
+                            if f.get('vcodec') != 'none' and f.get('acodec') != 'none':
+                                height = f.get('height', 0)
+                                ext = f.get('ext', 'mp4')
+                                filesize = f.get('filesize') or f.get('filesize_approx') or 0
+                                format_id = f.get('format_id', '')
+                                key = f"{height}p_{ext}"
+                                if key not in seen and height > 0:
+                                    seen.add(key)
+                                    formats.append({
+                                        'format_id': format_id,
+                                        'resolution': f"{height}p",
+                                        'height': height,
+                                        'ext': ext,
+                                        'filesize': filesize,
+                                        'filesize_str': self._format_size(filesize),
+                                        'fps': f.get('fps', 30),
+                                    })
 
-        class AdBlocker {
-            static let shared = AdBlocker()
-            
-            static let blockedDomains: Set<String> = [
-                "doubleclick.net", "googlesyndication.com", "googleadservices.com",
-                "google-analytics.com", "googletagmanager.com", "googletagservices.com",
-                "adnxs.com", "adsystem.com", "amazon-adsystem.com", "adsafeprotected.com",
-                "outbrain.com", "taboola.com", "criteo.com", "criteo.net",
-                "connect.facebook.net", "analytics.tiktok.com",
-                "scorecardresearch.com", "quantserve.com", "moatads.com",
-                "adroll.com", "adsrvr.org", "rubiconproject.com", "openx.net",
-                "pubmatic.com", "media.net", "adform.net", "innovid.com",
-                "sizmek.com", "smartadserver.com", "yieldmo.com", "chartbeat.com",
-                "hotjar.com", "mixpanel.com", "amplitude.com", "fullstory.com",
-                "propellerads.com", "popads.net", "popcash.net", "adcash.com",
-                "revcontent.com", "mgid.com", "zergnet.com",
-                "onclickads.net", "trafficjunky.com", "juicyads.com",
-                "eroadvertising.com", "exoclick.com", "exosrv.com",
-                "adsterra.com", "hilltopads.net", "clickadu.com"
-            ]
-            
-            static let blockedPatterns: [String] = [
-                "/ads/", "/adx/", "/advert", "/adserver", "/adservice",
-                "/adsense", "/pagead", "/adframe", "/adcall",
-                "/tracking", "/tracker", "/pixel", "/beacon",
-                "/telemetry", "/metrics", "/impression",
-                "doubleclick", "googleadservices", "googlesyndication",
-                "-ads-", "_ads_", ".ads.", "/ad-", "-ad-", "_ad_",
-                "popup", "popunder", "popads"
-            ]
-            
-            static let adBlockJS: String = {
-                var js = ""
-                js += "(function(){"
-                js += "function removeAds(){"
-                js += "var sels=['[class*=\"ad-\"]','[class*=\"ads-\"]','[id*=\"ad-\"]','[id*=\"ads-\"]','[class*=\"advertisement\"]','[class*=\"sponsored\"]','[class*=\"popup\"]','[class*=\"overlay-ad\"]','[data-ad]','[data-ads]','ins.adsbygoogle','.adsbox','.adBanner','.ad-container','.ad-wrapper','iframe[src*=\"ads\"]','iframe[src*=\"doubleclick\"]','iframe[src*=\"googlesyndication\"]'];"
-                js += "sels.forEach(function(s){try{document.querySelectorAll(s).forEach(function(el){el.remove();});}catch(e){}});"
-                js += "}"
-                js += "var oOpen=window.open;"
-                js += "window.open=function(u){if(u&&(u.indexOf('ad')>-1||u.indexOf('popup')>-1))return null;return oOpen.apply(this,arguments);};"
-                js += "removeAds();"
-                js += "setInterval(removeAds,2000);"
-                js += "var obs=new MutationObserver(removeAds);"
-                js += "if(document.body)obs.observe(document.body,{childList:true,subtree:true});"
-                js += "var blocked=['doubleclick','googlesyndication','googleadservices','adnxs','popads','popcash','adcash','taboola','outbrain'];"
-                js += "var oFetch=window.fetch;"
-                js += "window.fetch=function(){"
-                js += "var url=typeof arguments[0]==='string'?arguments[0]:(arguments[0]&&arguments[0].url?arguments[0].url:'');"
-                js += "for(var i=0;i<blocked.length;i++){if(url.indexOf(blocked[i])>-1)return Promise.reject(new Error('blocked'));}"
-                js += "return oFetch.apply(this,arguments);"
-                js += "};"
-                js += "var oXHR=XMLHttpRequest.prototype.open;"
-                js += "XMLHttpRequest.prototype.open=function(m,url){"
-                js += "for(var i=0;i<blocked.length;i++){if(url&&url.indexOf(blocked[i])>-1){this.abort();return;}}"
-                js += "return oXHR.apply(this,arguments);"
-                js += "};"
-                js += "})();"
-                return js
-            }()
-            
-            static func shouldBlock(url: String) -> Bool {
-                let lower = url.lowercased()
-                for d in blockedDomains { if lower.contains(d) { return true } }
-                for p in blockedPatterns { if lower.contains(p) { return true } }
-                return false
-            }
-        }
-        SWIFTEOF
+                        for f in info['formats']:
+                            if f.get('vcodec') != 'none' and f.get('acodec') == 'none':
+                                height = f.get('height', 0)
+                                filesize = f.get('filesize') or f.get('filesize_approx') or 0
+                                format_id = f.get('format_id', '')
+                                key = f"{height}p_merge"
+                                if key not in seen and height > 0:
+                                    seen.add(key)
+                                    formats.append({
+                                        'format_id': f"{format_id}+bestaudio",
+                                        'resolution': f"{height}p (HD)",
+                                        'height': height,
+                                        'ext': 'mp4',
+                                        'filesize': filesize,
+                                        'filesize_str': self._format_size(filesize),
+                                        'fps': f.get('fps', 30),
+                                    })
 
-        # ==========================================
-        # 6. IDMDownloader.swift (MULTI-THREADED - IDM STYLE!)
-        # ==========================================
-        cat > VideoFlow/Services/IDMDownloader.swift << 'SWIFTEOF'
-        import Foundation
+                    formats.sort(key=lambda x: x['height'], reverse=True)
 
-        // IDM-Style Multi-Segment Downloader
-        // Splits file into 8 parts and downloads in parallel
-        class IDMDownloader: NSObject {
-            static let shared = IDMDownloader()
-            
-            typealias ProgressCallback = (Double, String, Int) -> Void  // progress, speed, threads
-            typealias CompletionCallback = (Result<URL, Error>) -> Void
-            
-            enum IDMError: LocalizedError {
-                case invalidURL, serverError(Int), noRangeSupport
-                case downloadFailed(String), writeFailed(String)
-                
-                var errorDescription: String? {
-                    switch self {
-                    case .invalidURL: return "Invalid URL"
-                    case .serverError(let c): return "Server error \(c)"
-                    case .noRangeSupport: return "Server doesn't support parallel download"
-                    case .downloadFailed(let m): return m
-                    case .writeFailed(let m): return "Write: \(m)"
+                    formats.insert(0, {
+                        'format_id': 'best',
+                        'resolution': 'Best Quality Auto',
+                        'height': 99999,
+                        'ext': 'mp4',
+                        'filesize': 0,
+                        'filesize_str': '',
+                    })
+
+                    formats.append({
+                        'format_id': 'bestaudio/best',
+                        'resolution': 'Audio Only (MP3)',
+                        'height': 0,
+                        'ext': 'mp3',
+                        'filesize': 0,
+                        'filesize_str': '',
+                        'audio_only': True,
+                    })
+
+                    video_info = {
+                        'title': info.get('title', 'Unknown'),
+                        'duration': info.get('duration', 0),
+                        'duration_str': self._format_duration(info.get('duration', 0)),
+                        'thumbnail': info.get('thumbnail', ''),
+                        'uploader': info.get('uploader', 'Unknown'),
+                        'view_count': info.get('view_count', 0),
+                        'webpage_url': info.get('webpage_url', url),
+                        'extractor': info.get('extractor', 'Unknown'),
+                        'description': info.get('description', '')[:200],
+                        'formats': formats,
                     }
-                }
-            }
-            
-            struct Segment {
-                let index: Int
-                let start: Int64
-                let end: Int64
-                var data: Data?
-                var downloaded: Int64 = 0
-                var isComplete: Bool = false
-            }
-            
-            private let maxConcurrentSegments = 8
-            private let minSegmentSize: Int64 = 1_048_576  // 1MB
-            
-            // MAIN ENTRY POINT
-            func download(url: String, headers: [String: String], destination: URL,
-                          progress: @escaping ProgressCallback,
-                          completion: @escaping CompletionCallback) {
-                
-                print("🚀 IDM Downloader started: \(url)")
-                
-                guard let downloadURL = URL(string: url) else {
-                    completion(.failure(IDMError.invalidURL))
-                    return
-                }
-                
-                // Step 1: Get file info (size + range support)
-                getFileInfo(url: downloadURL, headers: headers) { result in
-                    switch result {
-                    case .success(let (fileSize, supportsRange)):
-                        print("📊 File size: \(fileSize), Range: \(supportsRange)")
-                        
-                        if supportsRange && fileSize > self.minSegmentSize * 2 {
-                            // Multi-threaded download
-                            self.multiThreadedDownload(
-                                url: downloadURL, fileSize: fileSize,
-                                headers: headers, destination: destination,
-                                progress: progress, completion: completion
-                            )
-                        } else {
-                            // Single-threaded fallback
-                            self.singleThreadedDownload(
-                                url: downloadURL, headers: headers,
-                                destination: destination,
-                                progress: progress, completion: completion
-                            )
+                    return {'success': True, 'data': video_info}
+                except Exception as e:
+                    return {'success': False, 'error': str(e)}
+
+            def download(self, url, format_id, save_path, progress_callback=None,
+                         complete_callback=None, error_callback=None):
+                def _download_thread():
+                    self.is_downloading = True
+                    self.is_cancelled = False
+                    try:
+                        is_audio = format_id == 'bestaudio/best'
+                        ydl_opts = {
+                            'outtmpl': os.path.join(save_path, '%(title)s.%(ext)s'),
+                            'quiet': True,
+                            'no_warnings': True,
+                            'progress_hooks': [lambda d: self._progress_hook(d, progress_callback)],
                         }
-                    case .failure(let error):
-                        completion(.failure(error))
-                    }
-                }
-            }
-            
-            // Step 1: HEAD request to get file size and check range support
-            private func getFileInfo(url: URL, headers: [String: String],
-                                     completion: @escaping (Result<(Int64, Bool), Error>) -> Void) {
-                var req = URLRequest(url: url)
-                req.httpMethod = "HEAD"
-                req.timeoutInterval = 30
-                req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
-                req.setValue("*/*", forHTTPHeaderField: "Accept")
-                for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
-                if headers["Referer"] == nil, let h = url.host {
-                    req.setValue("https://\(h)/", forHTTPHeaderField: "Referer")
-                }
-                
-                URLSession.shared.dataTask(with: req) { _, response, error in
-                    if let error = error {
-                        // If HEAD fails, try Range request
-                        self.probeWithRangeRequest(url: url, headers: headers, completion: completion)
-                        return
-                    }
-                    
-                    guard let http = response as? HTTPURLResponse else {
-                        completion(.failure(IDMError.serverError(0)))
-                        return
-                    }
-                    
-                    let size = http.expectedContentLength
-                    let acceptRanges = (http.value(forHTTPHeaderField: "Accept-Ranges") ?? "").lowercased()
-                    let supportsRange = acceptRanges.contains("bytes")
-                    
-                    if size > 0 {
-                        completion(.success((size, supportsRange)))
-                    } else {
-                        // Try Range request to determine size
-                        self.probeWithRangeRequest(url: url, headers: headers, completion: completion)
-                    }
-                }.resume()
-            }
-            
-            // Fallback: Probe with Range request
-            private func probeWithRangeRequest(url: URL, headers: [String: String],
-                                               completion: @escaping (Result<(Int64, Bool), Error>) -> Void) {
-                var req = URLRequest(url: url)
-                req.httpMethod = "GET"
-                req.setValue("bytes=0-1", forHTTPHeaderField: "Range")
-                req.timeoutInterval = 30
-                req.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
-                for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
-                
-                URLSession.shared.dataTask(with: req) { _, response, error in
-                    if let error = error {
-                        completion(.failure(IDMError.downloadFailed(error.localizedDescription)))
-                        return
-                    }
-                    
-                    guard let http = response as? HTTPURLResponse else {
-                        completion(.failure(IDMError.serverError(0)))
-                        return
-                    }
-                    
-                    // Check Content-Range header
-                    if http.statusCode == 206, let contentRange = http.value(forHTTPHeaderField: "Content-Range") {
-                        // Format: "bytes 0-1/12345"
-                        let parts = contentRange.components(separatedBy: "/")
-                        if parts.count == 2, let totalSize = Int64(parts[1]) {
-                            completion(.success((totalSize, true)))
-                            return
-                        }
-                    }
-                    
-                    // Fallback to single-thread
-                    completion(.success((http.expectedContentLength, false)))
-                }.resume()
-            }
-            
-            // MULTI-THREADED DOWNLOAD (IDM Style)
-            private func multiThreadedDownload(url: URL, fileSize: Int64,
-                                               headers: [String: String], destination: URL,
-                                               progress: @escaping ProgressCallback,
-                                               completion: @escaping CompletionCallback) {
-                
-                // Split file into segments
-                let numSegments = min(maxConcurrentSegments, max(1, Int(fileSize / minSegmentSize)))
-                let segmentSize = fileSize / Int64(numSegments)
-                
-                print("🎯 Splitting into \(numSegments) segments of \(segmentSize) bytes each")
-                
-                var segments: [Segment] = []
-                for i in 0..<numSegments {
-                    let start = Int64(i) * segmentSize
-                    let end = (i == numSegments - 1) ? fileSize - 1 : start + segmentSize - 1
-                    segments.append(Segment(index: i, start: start, end: end))
-                }
-                
-                // Create output file with correct size
-                try? FileManager.default.removeItem(at: destination)
-                FileManager.default.createFile(atPath: destination.path, contents: nil)
-                
-                guard let fileHandle = try? FileHandle(forWritingTo: destination) else {
-                    completion(.failure(IDMError.writeFailed("Cannot create file")))
-                    return
-                }
-                
-                // Preallocate file size
-                do {
-                    try fileHandle.seek(toOffset: UInt64(fileSize - 1))
-                    try fileHandle.write(contentsOf: Data([0]))
-                    try fileHandle.seek(toOffset: 0)
-                } catch {
-                    try? fileHandle.close()
-                    completion(.failure(IDMError.writeFailed(error.localizedDescription)))
-                    return
-                }
-                
-                let writeLock = NSLock()
-                let progressLock = NSLock()
-                var totalDownloaded: Int64 = 0
-                var completedSegments = 0
-                var failedSegments = 0
-                let startTime = Date()
-                var lastProgressUpdate = Date()
-                var lastBytesForSpeed: Int64 = 0
-                var currentSpeed: String = "0 KB/s"
-                
-                let group = DispatchGroup()
-                let concurrentQueue = DispatchQueue(label: "idm.download", attributes: .concurrent)
-                
-                // Start download for each segment
-                for segment in segments {
-                    group.enter()
-                    concurrentQueue.async {
-                        self.downloadSegment(
-                            url: url, segment: segment, headers: headers,
-                            onData: { data, segmentIndex in
-                                writeLock.lock()
-                                defer { writeLock.unlock() }
-                                do {
-                                    let offset = segments[segmentIndex].start + segments[segmentIndex].downloaded
-                                    try fileHandle.seek(toOffset: UInt64(offset))
-                                    try fileHandle.write(contentsOf: data)
-                                    segments[segmentIndex].downloaded += Int64(data.count)
-                                    
-                                    progressLock.lock()
-                                    totalDownloaded += Int64(data.count)
-                                    let now = Date()
-                                    let elapsed = now.timeIntervalSince(lastProgressUpdate)
-                                    if elapsed >= 0.5 {
-                                        let bps = Double(totalDownloaded - lastBytesForSpeed) / elapsed
-                                        currentSpeed = self.formatSpeed(bps)
-                                        lastProgressUpdate = now
-                                        lastBytesForSpeed = totalDownloaded
-                                    }
-                                    let p = Double(totalDownloaded) / Double(fileSize)
-                                    let activeThreads = numSegments - completedSegments - failedSegments
-                                    progressLock.unlock()
-                                    
-                                    progress(p, currentSpeed, max(0, activeThreads))
-                                } catch {
-                                    print("❌ Write error for segment \(segmentIndex): \(error)")
-                                }
-                            },
-                            completion: { success in
-                                progressLock.lock()
-                                if success {
-                                    completedSegments += 1
-                                    segments[segment.index].isComplete = true
-                                } else {
-                                    failedSegments += 1
-                                }
-                                progressLock.unlock()
-                                group.leave()
-                            }
-                        )
-                    }
-                }
-                
-                group.notify(queue: .main) {
-                    try? fileHandle.close()
-                    
-                    if failedSegments == segments.count {
-                        // All failed
-                        try? FileManager.default.removeItem(at: destination)
-                        completion(.failure(IDMError.downloadFailed("All segments failed")))
-                    } else if failedSegments > 0 {
-                        // Some failed - retry failed segments
-                        print("⚠️ \(failedSegments) segments failed, retrying...")
-                        self.retryFailedSegments(
-                            url: url, segments: segments, headers: headers,
-                            destination: destination, fileSize: fileSize,
-                            progress: progress, completion: completion
-                        )
-                    } else {
-                        // Success!
-                        let elapsed = Date().timeIntervalSince(startTime)
-                        let avgSpeed = Double(fileSize) / elapsed
-                        print("✅ Download complete in \(elapsed)s (avg: \(self.formatSpeed(avgSpeed)))")
-                        completion(.success(destination))
-                    }
-                }
-            }
-            
-            // Download individual segment with retry
-            private func downloadSegment(url: URL, segment: Segment, headers: [String: String],
-                                        onData: @escaping (Data, Int) -> Void,
-                                        completion: @escaping (Bool) -> Void) {
-                var req = URLRequest(url: url)
-                req.httpMethod = "GET"
-                req.timeoutInterval = 120
-                req.setValue("bytes=\(segment.start + segment.downloaded)-\(segment.end)", forHTTPHeaderField: "Range")
-                req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
-                req.setValue("*/*", forHTTPHeaderField: "Accept")
-                req.setValue("identity;q=1, *;q=0", forHTTPHeaderField: "Accept-Encoding")
-                for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
-                if headers["Referer"] == nil, let h = url.host {
-                    req.setValue("https://\(h)/", forHTTPHeaderField: "Referer")
-                }
-                
-                let delegate = SegmentDelegate(segmentIndex: segment.index, onData: onData, onComplete: completion)
-                let config = URLSessionConfiguration.default
-                config.timeoutIntervalForRequest = 120
-                config.timeoutIntervalForResource = 3600
-                let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
-                
-                let task = session.dataTask(with: req)
-                task.resume()
-            }
-            
-            // Retry failed segments
-            private func retryFailedSegments(url: URL, segments: [Segment], headers: [String: String],
-                                            destination: URL, fileSize: Int64,
-                                            progress: @escaping ProgressCallback,
-                                            completion: @escaping CompletionCallback) {
-                let failed = segments.filter { !$0.isComplete }
-                print("🔄 Retrying \(failed.count) failed segments...")
-                
-                guard let fileHandle = try? FileHandle(forWritingTo: destination) else {
-                    completion(.failure(IDMError.writeFailed("Cannot reopen file")))
-                    return
-                }
-                
-                let group = DispatchGroup()
-                let writeLock = NSLock()
-                var allSucceeded = true
-                
-                for segment in failed {
-                    group.enter()
-                    downloadSegment(
-                        url: url, segment: segment, headers: headers,
-                        onData: { data, _ in
-                            writeLock.lock()
-                            do {
-                                try fileHandle.seek(toOffset: UInt64(segment.start))
-                                try fileHandle.write(contentsOf: data)
-                            } catch {
-                                allSucceeded = false
-                            }
-                            writeLock.unlock()
-                        },
-                        completion: { success in
-                            if !success { allSucceeded = false }
-                            group.leave()
-                        }
-                    )
-                }
-                
-                group.notify(queue: .main) {
-                    try? fileHandle.close()
-                    if allSucceeded {
-                        completion(.success(destination))
-                    } else {
-                        try? FileManager.default.removeItem(at: destination)
-                        completion(.failure(IDMError.downloadFailed("Retry failed")))
-                    }
-                }
-            }
-            
-            // SINGLE-THREADED FALLBACK
-            private func singleThreadedDownload(url: URL, headers: [String: String],
-                                               destination: URL,
-                                               progress: @escaping ProgressCallback,
-                                               completion: @escaping CompletionCallback) {
-                print("📥 Single-thread download")
-                
-                try? FileManager.default.removeItem(at: destination)
-                FileManager.default.createFile(atPath: destination.path, contents: nil)
-                
-                guard let fileHandle = try? FileHandle(forWritingTo: destination) else {
-                    completion(.failure(IDMError.writeFailed("Cannot create file")))
-                    return
-                }
-                
-                var req = URLRequest(url: url)
-                req.timeoutInterval = 120
-                req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
-                req.setValue("*/*", forHTTPHeaderField: "Accept")
-                for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
-                if headers["Referer"] == nil, let h = url.host {
-                    req.setValue("https://\(h)/", forHTTPHeaderField: "Referer")
-                }
-                
-                var totalDownloaded: Int64 = 0
-                var totalExpected: Int64 = 0
-                let startTime = Date()
-                var lastUpdate = Date()
-                var lastBytes: Int64 = 0
-                
-                let delegate = SingleThreadDelegate(
-                    fileHandle: fileHandle,
-                    onProgress: { bytes, total in
-                        totalDownloaded = bytes
-                        totalExpected = total
-                        let now = Date()
-                        let elapsed = now.timeIntervalSince(lastUpdate)
-                        if elapsed >= 0.5 {
-                            let bps = Double(bytes - lastBytes) / elapsed
-                            let speed = self.formatSpeed(bps)
-                            let p = total > 0 ? Double(bytes) / Double(total) : 0
-                            progress(p, speed, 1)
-                            lastUpdate = now
-                            lastBytes = bytes
-                        }
-                    },
-                    onComplete: { success in
-                        try? fileHandle.close()
-                        if success {
-                            completion(.success(destination))
-                        } else {
-                            try? FileManager.default.removeItem(at: destination)
-                            completion(.failure(IDMError.downloadFailed("Single-thread failed")))
-                        }
-                    }
-                )
-                
-                let config = URLSessionConfiguration.default
-                config.timeoutIntervalForRequest = 120
-                config.timeoutIntervalForResource = 7200
-                let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
-                session.dataTask(with: req).resume()
-            }
-            
-            private func formatSpeed(_ bps: Double) -> String {
-                if bps < 1024 { return "\(Int(bps)) B/s" }
-                if bps < 1048576 { return String(format: "%.1f KB/s", bps/1024) }
-                return String(format: "%.2f MB/s", bps/1048576)
-            }
-        }
+                        if is_audio:
+                            ydl_opts['format'] = 'bestaudio/best'
+                            ydl_opts['postprocessors'] = [{
+                                'key': 'FFmpegExtractAudio',
+                                'preferredcodec': 'mp3',
+                                'preferredquality': '320',
+                            }]
+                        elif format_id == 'best':
+                            ydl_opts['format'] = 'bestvideo+bestaudio/best'
+                            ydl_opts['merge_output_format'] = 'mp4'
+                        else:
+                            ydl_opts['format'] = format_id
+                            if '+' in format_id:
+                                ydl_opts['merge_output_format'] = 'mp4'
 
-        // Segment download delegate
-        class SegmentDelegate: NSObject, URLSessionDataDelegate {
-            let segmentIndex: Int
-            let onData: (Data, Int) -> Void
-            let onComplete: (Bool) -> Void
-            var hasReceivedData = false
-            
-            init(segmentIndex: Int, onData: @escaping (Data, Int) -> Void, onComplete: @escaping (Bool) -> Void) {
-                self.segmentIndex = segmentIndex
-                self.onData = onData
-                self.onComplete = onComplete
-            }
-            
-            func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-                if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
-                    completionHandler(.cancel)
-                    return
-                }
-                completionHandler(.allow)
-            }
-            
-            func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-                hasReceivedData = true
-                onData(data, segmentIndex)
-            }
-            
-            func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-                onComplete(error == nil && hasReceivedData)
-                session.invalidateAndCancel()
-            }
-        }
-
-        // Single-thread download delegate
-        class SingleThreadDelegate: NSObject, URLSessionDataDelegate {
-            let fileHandle: FileHandle
-            let onProgress: (Int64, Int64) -> Void
-            let onComplete: (Bool) -> Void
-            var totalReceived: Int64 = 0
-            var totalExpected: Int64 = 0
-            
-            init(fileHandle: FileHandle, onProgress: @escaping (Int64, Int64) -> Void, onComplete: @escaping (Bool) -> Void) {
-                self.fileHandle = fileHandle
-                self.onProgress = onProgress
-                self.onComplete = onComplete
-            }
-            
-            func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-                if let http = response as? HTTPURLResponse {
-                    if http.statusCode >= 400 {
-                        completionHandler(.cancel)
-                        return
-                    }
-                    let mime = http.mimeType?.lowercased() ?? ""
-                    if mime.contains("text/html") {
-                        completionHandler(.cancel)
-                        return
-                    }
-                }
-                totalExpected = response.expectedContentLength
-                completionHandler(.allow)
-            }
-            
-            func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-                try? fileHandle.write(contentsOf: data)
-                totalReceived += Int64(data.count)
-                onProgress(totalReceived, totalExpected)
-            }
-            
-            func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-                onComplete(error == nil && totalReceived > 10000)
-                session.invalidateAndCancel()
-            }
-        }
-        SWIFTEOF
-
-        # ==========================================
-        # 7. HLSDownloader.swift (IDM-STYLE HLS)
-        # ==========================================
-        cat > VideoFlow/Services/HLSDownloader.swift << 'SWIFTEOF'
-        import Foundation
-        import AVFoundation
-
-        class HLSDownloader: NSObject {
-            static let shared = HLSDownloader()
-            
-            typealias ProgressCallback = (Double) -> Void
-            typealias CompletionCallback = (Result<URL, Error>) -> Void
-            
-            enum HLSError: LocalizedError {
-                case invalidURL, noSegments, downloadFailed(String)
-                var errorDescription: String? {
-                    switch self {
-                    case .invalidURL: return "Invalid HLS URL"
-                    case .noSegments: return "No segments found"
-                    case .downloadFailed(let m): return m
-                    }
-                }
-            }
-            
-            private let maxParallelSegments = 6
-            
-            func downloadHLS(url: String, headers: [String: String], destination: URL,
-                             progress: @escaping ProgressCallback,
-                             completion: @escaping CompletionCallback) {
-                
-                guard let manifestURL = URL(string: url) else {
-                    completion(.failure(HLSError.invalidURL))
-                    return
-                }
-                
-                print("🎬 HLS Download: \(url)")
-                
-                fetchManifest(url: manifestURL, headers: headers) { [weak self] result in
-                    switch result {
-                    case .success(let (content, baseURL)):
-                        if content.contains("#EXT-X-STREAM-INF") {
-                            // Master playlist - select best variant
-                            if let variant = self?.selectBestVariant(manifest: content, baseURL: baseURL) {
-                                self?.downloadHLS(url: variant.absoluteString, headers: headers,
-                                                 destination: destination, progress: progress,
-                                                 completion: completion)
-                            } else {
-                                completion(.failure(HLSError.noSegments))
-                            }
-                            return
-                        }
-                        
-                        let segments = self?.parseSegments(manifest: content, baseURL: baseURL) ?? []
-                        if segments.isEmpty {
-                            completion(.failure(HLSError.noSegments))
-                            return
-                        }
-                        
-                        self?.downloadSegmentsParallel(
-                            segments: segments, headers: headers,
-                            destination: destination,
-                            progress: progress, completion: completion
-                        )
-                    case .failure(let e):
-                        completion(.failure(e))
-                    }
-                }
-            }
-            
-            private func fetchManifest(url: URL, headers: [String: String],
-                                       completion: @escaping (Result<(String, URL), Error>) -> Void) {
-                var req = URLRequest(url: url)
-                for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
-                req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
-                req.timeoutInterval = 30
-                
-                URLSession.shared.dataTask(with: req) { data, response, error in
-                    if let error = error {
-                        completion(.failure(HLSError.downloadFailed(error.localizedDescription)))
-                        return
-                    }
-                    guard let data = data, let content = String(data: data, encoding: .utf8) else {
-                        completion(.failure(HLSError.downloadFailed("Empty manifest")))
-                        return
-                    }
-                    let baseURL = (response?.url ?? url).deletingLastPathComponent()
-                    completion(.success((content, baseURL)))
-                }.resume()
-            }
-            
-            private func selectBestVariant(manifest: String, baseURL: URL) -> URL? {
-                let lines = manifest.components(separatedBy: .newlines)
-                var variants: [(Int, URL)] = []
-                
-                for i in 0..<lines.count {
-                    let line = lines[i].trimmingCharacters(in: .whitespaces)
-                    if line.hasPrefix("#EXT-X-STREAM-INF:") {
-                        var bandwidth = 0
-                        if let bwRange = line.range(of: "BANDWIDTH=") {
-                            let after = String(line[bwRange.upperBound...])
-                            bandwidth = Int(after.prefix { $0.isNumber }) ?? 0
-                        }
-                        if i + 1 < lines.count {
-                            let urlLine = lines[i + 1].trimmingCharacters(in: .whitespaces)
-                            if !urlLine.isEmpty && !urlLine.hasPrefix("#") {
-                                let variantURL = urlLine.hasPrefix("http") ? URL(string: urlLine) : baseURL.appendingPathComponent(urlLine)
-                                if let u = variantURL { variants.append((bandwidth, u)) }
-                            }
-                        }
-                    }
-                }
-                
-                return variants.max(by: { $0.0 < $1.0 })?.1
-            }
-            
-            private func parseSegments(manifest: String, baseURL: URL) -> [URL] {
-                var segments: [URL] = []
-                let lines = manifest.components(separatedBy: .newlines)
-                for line in lines {
-                    let trimmed = line.trimmingCharacters(in: .whitespaces)
-                    if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
-                    if trimmed.hasPrefix("http") {
-                        if let u = URL(string: trimmed) { segments.append(u) }
-                    } else {
-                        segments.append(baseURL.appendingPathComponent(trimmed))
-                    }
-                }
-                return segments
-            }
-            
-            // Parallel segment download with proper ordering
-            private func downloadSegmentsParallel(segments: [URL], headers: [String: String],
-                                                  destination: URL,
-                                                  progress: @escaping ProgressCallback,
-                                                  completion: @escaping CompletionCallback) {
-                
-                print("📦 Downloading \(segments.count) segments in parallel...")
-                
-                try? FileManager.default.removeItem(at: destination)
-                FileManager.default.createFile(atPath: destination.path, contents: nil)
-                
-                guard let fileHandle = try? FileHandle(forWritingTo: destination) else {
-                    completion(.failure(HLSError.downloadFailed("Cannot create output")))
-                    return
-                }
-                
-                var segmentData: [Int: Data] = [:]
-                let dataLock = NSLock()
-                var completedCount = 0
-                let countLock = NSLock()
-                let group = DispatchGroup()
-                let semaphore = DispatchSemaphore(value: maxParallelSegments)
-                
-                for (index, segURL) in segments.enumerated() {
-                    group.enter()
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        semaphore.wait()
-                        defer {
-                            semaphore.signal()
-                            group.leave()
-                        }
-                        
-                        self.downloadSegmentWithRetry(url: segURL, headers: headers, retries: 3) { data in
-                            if let data = data {
-                                dataLock.lock()
-                                segmentData[index] = data
-                                dataLock.unlock()
-                            }
-                            countLock.lock()
-                            completedCount += 1
-                            let p = Double(completedCount) / Double(segments.count) * 0.9
-                            countLock.unlock()
-                            progress(p)
-                        }
-                    }
-                }
-                
-                group.notify(queue: .main) {
-                    if segmentData.isEmpty {
-                        try? fileHandle.close()
-                        try? FileManager.default.removeItem(at: destination)
-                        completion(.failure(HLSError.downloadFailed("All segments failed")))
-                        return
-                    }
-                    
-                    // Write segments in correct order
-                    print("💾 Writing \(segmentData.count) segments in order...")
-                    for i in 0..<segments.count {
-                        if let data = segmentData[i] {
-                            try? fileHandle.write(contentsOf: data)
-                        }
-                    }
-                    try? fileHandle.close()
-                    
-                    // Try to remux to MP4
-                    self.remuxToMP4(source: destination, progress: progress, completion: completion)
-                }
-            }
-            
-            private func downloadSegmentWithRetry(url: URL, headers: [String: String], retries: Int,
-                                                  completion: @escaping (Data?) -> Void) {
-                var req = URLRequest(url: url)
-                for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
-                req.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
-                req.timeoutInterval = 60
-                
-                URLSession.shared.dataTask(with: req) { data, _, error in
-                    if let data = data, !data.isEmpty {
-                        completion(data)
-                    } else if retries > 0 {
-                        DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
-                            self.downloadSegmentWithRetry(url: url, headers: headers, retries: retries - 1, completion: completion)
-                        }
-                    } else {
-                        completion(nil)
-                    }
-                }.resume()
-            }
-            
-            private func remuxToMP4(source: URL, progress: @escaping ProgressCallback,
-                                    completion: @escaping CompletionCallback) {
-                print("🔄 Remuxing to MP4...")
-                
-                let asset = AVURLAsset(url: source)
-                asset.loadValuesAsynchronously(forKeys: ["tracks", "duration"]) {
-                    var error: NSError?
-                    let status = asset.statusOfValue(forKey: "tracks", error: &error)
-                    
-                    if status != .loaded {
-                        progress(1.0)
-                        completion(.success(source))
-                        return
-                    }
-                    
-                    let tempOutput = source.deletingLastPathComponent()
-                        .appendingPathComponent("remuxed_\(UUID().uuidString).mp4")
-                    
-                    guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
-                        progress(1.0)
-                        completion(.success(source))
-                        return
-                    }
-                    
-                    export.outputURL = tempOutput
-                    export.outputFileType = .mp4
-                    export.shouldOptimizeForNetworkUse = true
-                    
-                    export.exportAsynchronously {
-                        switch export.status {
-                        case .completed:
-                            try? FileManager.default.removeItem(at: source)
-                            try? FileManager.default.moveItem(at: tempOutput, to: source)
-                            progress(1.0)
-                            completion(.success(source))
-                        default:
-                            try? FileManager.default.removeItem(at: tempOutput)
-                            progress(1.0)
-                            completion(.success(source))
-                        }
-                    }
-                }
-            }
-        }
-        SWIFTEOF
-
-        # ==========================================
-        # 8. DownloadManager.swift (USES IDM ENGINE)
-        # ==========================================
-        cat > VideoFlow/Services/DownloadManager.swift << 'SWIFTEOF'
-        import Foundation
-        import UserNotifications
-
-        class DownloadManager: ObservableObject {
-            static let shared = DownloadManager()
-            @Published var activeDownloads: [DownloadTask] = []
-            @Published var completedVideos: [DownloadTask] = []
-            var backgroundCompletionHandler: (() -> Void)?
-
-            init() {
-                setupDir()
-                loadSaved()
-            }
-
-            private func setupDir() {
-                let d = downloadsDir()
-                if !FileManager.default.fileExists(atPath: d.path) {
-                    try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
-                }
-            }
-
-            func downloadsDir() -> URL {
-                FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                    .appendingPathComponent("Downloads", isDirectory: true)
-            }
-
-            func startDownload(video: VideoItem, quality: VideoQuality) {
-                print("🎯 START: \(video.url)")
-                let task = DownloadTask(video: video, quality: quality)
-                DispatchQueue.main.async { self.activeDownloads.append(task) }
-
-                let safe = sanitize(video.title)
-                let ext = quality == .audio ? "mp3" : "mp4"
-                let name = "\(safe)_\(quality.rawValue)_\(Int(Date().timeIntervalSince1970)).\(ext)"
-                let dest = downloadsDir().appendingPathComponent(name)
-
-                // HLS uses different downloader
-                if video.isHLS {
-                    DispatchQueue.main.async { task.status = .converting }
-                    HLSDownloader.shared.downloadHLS(
-                        url: video.url, headers: video.headers, destination: dest,
-                        progress: { p in
-                            DispatchQueue.main.async {
-                                task.progress = p
-                                task.status = .downloading(progress: p)
-                                task.activeThreads = 6
-                            }
-                        },
-                        completion: { result in
-                            DispatchQueue.main.async {
-                                switch result {
-                                case .success(let url):
-                                    task.savedURL = url
-                                    task.status = .completed
-                                    task.progress = 1.0
-                                    task.activeThreads = 0
-                                    self.activeDownloads.removeAll { $0.id == task.id }
-                                    self.completedVideos.insert(task, at: 0)
-                                    self.notify(task)
-                                case .failure(let e):
-                                    task.status = .failed(error: e.localizedDescription)
-                                    try? FileManager.default.removeItem(at: dest)
-                                }
-                            }
-                        }
-                    )
-                    return
-                }
-
-                // Regular download - USE IDM ENGINE
-                IDMDownloader.shared.download(
-                    url: video.url,
-                    headers: video.headers,
-                    destination: dest,
-                    progress: { p, speed, threads in
-                        DispatchQueue.main.async {
-                            task.progress = p
-                            task.speed = speed
-                            task.activeThreads = threads
-                            task.status = .downloading(progress: p)
-                        }
-                    },
-                    completion: { result in
-                        DispatchQueue.main.async {
-                            switch result {
-                            case .success(let url):
-                                // Validate file
-                                if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-                                   let size = attrs[.size] as? Int64, size > 10000 {
-                                    if let fh = try? FileHandle(forReadingFrom: url) {
-                                        let header = fh.readData(ofLength: 12)
-                                        try? fh.close()
-                                        if !self.isValidVideoFile(header: header) {
-                                            task.status = .failed(error: "Invalid file format")
-                                            try? FileManager.default.removeItem(at: url)
-                                            return
-                                        }
-                                    }
-                                    task.savedURL = url
-                                    task.status = .completed
-                                    task.progress = 1.0
-                                    task.activeThreads = 0
-                                    self.activeDownloads.removeAll { $0.id == task.id }
-                                    self.completedVideos.insert(task, at: 0)
-                                    self.notify(task)
-                                } else {
-                                    task.status = .failed(error: "File too small")
-                                    try? FileManager.default.removeItem(at: url)
-                                }
-                            case .failure(let e):
-                                task.status = .failed(error: e.localizedDescription)
-                                try? FileManager.default.removeItem(at: dest)
-                            }
-                        }
-                    }
-                )
-            }
-
-            func pauseDownload(_ t: DownloadTask) {
-                DispatchQueue.main.async { t.status = .paused }
-            }
-
-            func resumeDownload(_ t: DownloadTask) {
-                startDownload(video: t.video, quality: t.quality)
-                DispatchQueue.main.async { self.activeDownloads.removeAll { $0.id == t.id } }
-            }
-
-            func cancelDownload(_ t: DownloadTask) {
-                DispatchQueue.main.async { self.activeDownloads.removeAll { $0.id == t.id } }
-            }
-
-            func deleteVideo(_ t: DownloadTask) {
-                if let u = t.savedURL { try? FileManager.default.removeItem(at: u) }
-                DispatchQueue.main.async { self.completedVideos.removeAll { $0.id == t.id } }
-            }
-
-            func retryDownload(_ t: DownloadTask) {
-                DispatchQueue.main.async { self.activeDownloads.removeAll { $0.id == t.id } }
-                startDownload(video: t.video, quality: t.quality)
-            }
-
-            private func sanitize(_ name: String) -> String {
-                var s = name.components(separatedBy: CharacterSet(charactersIn: "/\\:*?\"<>|\n\r")).joined(separator: "_")
-                s = s.replacingOccurrences(of: " ", with: "_")
-                if s.count > 50 { s = String(s.prefix(50)) }
-                return s.isEmpty ? "video" : s
-            }
-
-            private func loadSaved() {
-                let d = downloadsDir()
-                guard let files = try? FileManager.default.contentsOfDirectory(at: d, includingPropertiesForKeys: [.fileSizeKey]) else { return }
-                let exts = Set(["mp4","m4v","mov","mkv","avi","mp3","m4a","webm","ts"])
-                DispatchQueue.main.async {
-                    self.completedVideos = files.filter { exts.contains($0.pathExtension.lowercased()) }.compactMap { u in
-                        if let attrs = try? FileManager.default.attributesOfItem(atPath: u.path),
-                           let size = attrs[.size] as? Int64, size > 100_000 {
-                            let v = VideoItem(id: u.lastPathComponent, title: u.deletingPathExtension().lastPathComponent, url: u.absoluteString, availableQualities: [.p720], sourceType: .direct)
-                            let t = DownloadTask(video: v, quality: .p720)
-                            t.savedURL = u; t.status = .completed
-                            return t
-                        }
-                        return nil
-                    }
-                }
-            }
-
-            private func notify(_ t: DownloadTask) {
-                let c = UNMutableNotificationContent()
-                c.title = "Download Complete"; c.body = t.video.title; c.sound = .default
-                UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: t.id, content: c, trigger: nil))
-            }
-
-            private func isValidVideoFile(header: Data) -> Bool {
-                guard header.count >= 8 else { return false }
-                let bytes = [UInt8](header)
-                if bytes[4] == 0x66 && bytes[5] == 0x74 && bytes[6] == 0x79 && bytes[7] == 0x70 { return true }
-                if bytes[0] == 0x1A && bytes[1] == 0x45 && bytes[2] == 0xDF && bytes[3] == 0xA3 { return true }
-                if bytes[0] == 0x49 && bytes[1] == 0x44 && bytes[2] == 0x33 { return true }
-                if bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0 { return true }
-                if bytes[0] == 0x47 { return true }
-                let str = String(bytes: bytes[4..<8], encoding: .ascii) ?? ""
-                if ["moov", "mdat", "wide", "free", "skip"].contains(str) { return true }
-                return false
-            }
-        }
-        SWIFTEOF
-
-        # ==========================================
-        # 9. PlayerManager.swift (FIXED)
-        # ==========================================
-        cat > VideoFlow/Services/PlayerManager.swift << 'SWIFTEOF'
-        import Foundation
-        import AVFoundation
-        import Combine
-
-        class PlayerManager: NSObject, ObservableObject {
-            static let shared = PlayerManager()
-            @Published var currentVideo: DownloadTask?
-            @Published var isPlaying = false
-            @Published var isFullScreen = false
-            @Published var isMinimized = false
-            @Published var currentTime: Double = 0
-            @Published var duration: Double = 0
-            @Published var volume: Float = 1.0
-            @Published var playbackSpeed: Float = 1.0
-            @Published var isMuted = false
-            @Published var isLoading = false
-            @Published var errorMessage: String?
-            
-            var player: AVPlayer?
-            var playerItem: AVPlayerItem?
-            private var timeObs: Any?
-            private var itemObserver: NSKeyValueObservation?
-
-            func playVideo(_ task: DownloadTask) {
-                currentVideo = task
-                errorMessage = nil
-                
-                let videoURL: URL
-                if let saved = task.savedURL {
-                    if !FileManager.default.fileExists(atPath: saved.path) {
-                        errorMessage = "File not found"
-                        return
-                    }
-                    videoURL = saved
-                } else if let url = URL(string: task.video.url) {
-                    videoURL = url
-                } else {
-                    errorMessage = "Invalid URL"
-                    return
-                }
-                
-                print("🎥 Playing: \(videoURL.path)")
-                
-                isLoading = true
-                cleanupPlayer()
-                
-                let asset = AVURLAsset(url: videoURL)
-                asset.loadValuesAsynchronously(forKeys: ["playable", "duration", "tracks"]) { [weak self] in
-                    DispatchQueue.main.async {
-                        guard let self = self else { return }
-                        
-                        var error: NSError?
-                        let status = asset.statusOfValue(forKey: "playable", error: &error)
-                        
-                        if status == .failed || !asset.isPlayable {
-                            self.isLoading = false
-                            self.errorMessage = "Cannot play: \(error?.localizedDescription ?? "invalid format")"
-                            return
-                        }
-                        
-                        let item = AVPlayerItem(asset: asset)
-                        self.playerItem = item
-                        
-                        self.itemObserver = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
-                            DispatchQueue.main.async {
-                                guard let self = self else { return }
-                                switch item.status {
-                                case .readyToPlay:
-                                    self.isLoading = false
-                                    let dur = item.duration.seconds
-                                    self.duration = dur.isNaN || dur.isInfinite ? 0 : dur
-                                    self.player?.play()
-                                    self.isPlaying = true
-                                case .failed:
-                                    self.isLoading = false
-                                    self.errorMessage = "Playback failed: \(item.error?.localizedDescription ?? "unknown")"
-                                default: break
-                                }
-                            }
-                        }
-                        
-                        self.player = AVPlayer(playerItem: item)
-                        self.player?.volume = self.volume
-                        
-                        self.timeObs = self.player?.addPeriodicTimeObserver(
-                            forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
-                            queue: .main
-                        ) { [weak self] t in
-                            let s = t.seconds
-                            if !s.isNaN && !s.isInfinite { self?.currentTime = s }
-                        }
-                        
-                        self.isFullScreen = true
-                        self.isMinimized = false
-                    }
-                }
-            }
-
-            func togglePlayPause() {
-                if isPlaying { player?.pause() }
-                else {
-                    player?.play()
-                    if playbackSpeed != 1.0 { player?.rate = playbackSpeed }
-                }
-                isPlaying.toggle()
-            }
-            
-            func seek(to t: Double) {
-                player?.seek(to: CMTime(seconds: t, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
-            }
-            
-            func skipForward(_ s: Double = 10) { seek(to: min(currentTime + s, duration)) }
-            func skipBackward(_ s: Double = 10) { seek(to: max(currentTime - s, 0)) }
-            func setSpeed(_ s: Float) { playbackSpeed = s; if isPlaying { player?.rate = s } }
-            func setVolume(_ v: Float) { volume = v; player?.volume = v }
-            func minimize() { isFullScreen = false; isMinimized = true }
-            
-            func close() {
-                cleanupPlayer()
-                isPlaying = false; isFullScreen = false; isMinimized = false
-                currentVideo = nil; currentTime = 0; duration = 0; errorMessage = nil
-            }
-            
-            private func cleanupPlayer() {
-                if let obs = timeObs { player?.removeTimeObserver(obs); timeObs = nil }
-                itemObserver?.invalidate(); itemObserver = nil
-                player?.pause(); player = nil; playerItem = nil
-            }
-            
-            var progress: Double { duration > 0 ? currentTime / duration : 0 }
-            
-            func fmt(_ t: Double) -> String {
-                guard !t.isNaN && !t.isInfinite && t >= 0 else { return "0:00" }
-                let s = Int(t)
-                return s >= 3600 ? String(format: "%d:%02d:%02d", s/3600, (s%3600)/60, s%60) : String(format: "%d:%02d", s/60, s%60)
-            }
-        }
-        SWIFTEOF
-
-        # ==========================================
-        # 10. UltimateExtractor.swift (MULTI-API)
-        # ==========================================
-        cat > VideoFlow/Extractors/UltimateExtractor.swift << 'SWIFTEOF'
-        import Foundation
-
-        struct ExtractedStream {
-            let url: String
-            let quality: VideoQuality
-            let headers: [String: String]
-            let filename: String?
-            let hasAudio: Bool
-            let container: String
-        }
-
-        struct ExtractedVideo {
-            let title: String
-            let streams: [ExtractedStream]
-            let thumbnail: String?
-            let sourceType: VideoSourceType
-        }
-
-        enum ExError: LocalizedError {
-            case allFailed(String), invalidURL, noStreams, network(String), needSpecificVideo
-            var errorDescription: String? {
-                switch self {
-                case .allFailed(let m): return m
-                case .invalidURL: return "Invalid URL"
-                case .noStreams: return "No videos found"
-                case .network(let m): return m
-                case .needSpecificVideo: return "Please open a specific video page"
-                }
-            }
-        }
-
-        class UltimateExtractor {
-            static let shared = UltimateExtractor()
-
-            private let cobaltMirrors = [
-                "https://api.cobalt.tools",
-                "https://co.wuk.sh",
-                "https://cobalt-api.kwiatekmiki.com",
-                "https://cobalt-backend.canine.tools",
-                "https://cobalt.synzr.space",
-                "https://capi.oak.li",
-                "https://cobalt-api.ayo.tf",
-                "https://api.dl.sauw.ca"
-            ]
-
-            func detectSite(_ url: String) -> VideoSourceType {
-                let l = url.lowercased()
-                if l.contains("youtube.com") || l.contains("youtu.be") { return .youtube }
-                if l.contains("tiktok.com") { return .tiktok }
-                if l.contains("instagram.com") { return .instagram }
-                if l.contains("facebook.com") || l.contains("fb.watch") { return .facebook }
-                if l.contains("twitter.com") || l.contains("x.com") { return .twitter }
-                if l.contains("reddit.com") { return .reddit }
-                if l.contains("vimeo.com") { return .vimeo }
-                if l.contains(".m3u8") { return .hls }
-                if l.contains(".mp4") || l.contains(".webm") { return .direct }
-                return .other
-            }
-            
-            func isValidVideoURL(_ url: String, site: VideoSourceType) -> Bool {
-                let l = url.lowercased()
-                switch site {
-                case .tiktok: return l.contains("/video/") || l.contains("/@")
-                case .youtube: return l.contains("watch?v=") || l.contains("youtu.be/") || l.contains("/shorts/")
-                case .instagram: return l.contains("/p/") || l.contains("/reel/") || l.contains("/tv/")
-                case .facebook: return l.contains("/videos/") || l.contains("/watch") || l.contains("fb.watch")
-                case .twitter: return l.contains("/status/")
-                default: return true
-                }
-            }
-
-            func extract(from url: String, quality: VideoQuality = .p1080, audioOnly: Bool = false, capturedURLs: [String] = [], completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                let site = detectSite(url)
-                
-                if site == .direct || site == .hls {
-                    let s = ExtractedStream(url: url, quality: quality, headers: [:], filename: nil, hasAudio: true, container: site == .hls ? "m3u8" : "mp4")
-                    completion(.success(ExtractedVideo(title: URL(string: url)?.lastPathComponent ?? "Video", streams: [s], thumbnail: nil, sourceType: site)))
-                    return
-                }
-
-                if !isValidVideoURL(url, site: site) {
-                    if let best = findBestCapturedURL(capturedURLs, site: site) {
-                        let container = best.lowercased().contains(".m3u8") ? "m3u8" : "mp4"
-                        let s = ExtractedStream(url: best, quality: quality, headers: getHeaders(refUrl: url), filename: nil, hasAudio: true, container: container)
-                        completion(.success(ExtractedVideo(title: "Captured", streams: [s], thumbnail: nil, sourceType: site)))
-                        return
-                    }
-                    completion(.failure(ExError.needSpecificVideo))
-                    return
-                }
-
-                trySiteSpecific(url: url, site: site, quality: quality) { [weak self] r in
-                    switch r {
-                    case .success(let v): completion(.success(v))
-                    case .failure:
-                        self?.tryCobaltChain(url: url, quality: quality, audioOnly: audioOnly, idx: 0) { r2 in
-                            switch r2 {
-                            case .success(let v): completion(.success(v))
-                            case .failure:
-                                if let best = self?.findBestCapturedURL(capturedURLs, site: site) {
-                                    let container = best.lowercased().contains(".m3u8") ? "m3u8" : "mp4"
-                                    let s = ExtractedStream(url: best, quality: quality, headers: self?.getHeaders(refUrl: url) ?? [:], filename: nil, hasAudio: true, container: container)
-                                    completion(.success(ExtractedVideo(title: "Captured", streams: [s], thumbnail: nil, sourceType: site)))
-                                } else {
-                                    completion(.failure(ExError.allFailed("All methods failed")))
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            func findBestCapturedURL(_ urls: [String], site: VideoSourceType) -> String? {
-                return urls.sorted { scoreURL($0) > scoreURL($1) }.first
-            }
-            
-            private func scoreURL(_ url: String) -> Int {
-                let l = url.lowercased()
-                var s = 0
-                if l.contains(".mp4") { s += 100 }
-                if l.contains(".webm") { s += 80 }
-                if l.contains(".m3u8") { s += 50 }
-                if l.contains("1080") { s += 30 }
-                if l.contains("720") { s += 20 }
-                if l.contains("blank.mp4") { s -= 200 }
-                if l.contains("thumbnail") { s -= 100 }
-                return s
-            }
-            
-            func getHeaders(refUrl: String) -> [String: String] {
-                var h = ["User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"]
-                if let host = URL(string: refUrl)?.host {
-                    h["Referer"] = "https://\(host)/"
-                    h["Origin"] = "https://\(host)"
-                }
-                return h
-            }
-
-            private func trySiteSpecific(url: String, site: VideoSourceType, quality: VideoQuality, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                switch site {
-                case .tiktok: tikTokExtract(url, completion: completion)
-                case .twitter: twitterExtract(url, completion: completion)
-                case .reddit: redditExtract(url, completion: completion)
-                case .instagram: instagramExtract(url, completion: completion)
-                case .facebook: facebookExtract(url, completion: completion)
-                default: completion(.failure(ExError.noStreams))
-                }
-            }
-
-            private func tikTokExtract(_ url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                guard let api = URL(string: "https://tikwm.com/api/") else { completion(.failure(ExError.invalidURL)); return }
-                var req = URLRequest(url: api); req.httpMethod = "POST"
-                req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-                req.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
-                req.httpBody = "url=\(url.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? url)&hd=1".data(using: .utf8)
-
-                URLSession.shared.dataTask(with: req) { data, _, _ in
-                    guard let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let d = j["data"] as? [String: Any] else { completion(.failure(ExError.noStreams)); return }
-                    var streams: [ExtractedStream] = []
-                    let title = d["title"] as? String ?? "TikTok Video"
-                    if let u = d["hdplay"] as? String { streams.append(ExtractedStream(url: u, quality: .p1080, headers: [:], filename: nil, hasAudio: true, container: "mp4")) }
-                    if let u = d["play"] as? String { streams.append(ExtractedStream(url: u, quality: .p720, headers: [:], filename: nil, hasAudio: true, container: "mp4")) }
-                    if let u = d["music"] as? String { streams.append(ExtractedStream(url: u, quality: .audio, headers: [:], filename: "audio", hasAudio: true, container: "mp3")) }
-                    streams.isEmpty ? completion(.failure(ExError.noStreams)) : completion(.success(ExtractedVideo(title: title, streams: streams, thumbnail: d["cover"] as? String, sourceType: .tiktok)))
-                }.resume()
-            }
-
-            private func twitterExtract(_ url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                let api = url.replacingOccurrences(of: "x.com", with: "api.fxtwitter.com").replacingOccurrences(of: "twitter.com", with: "api.fxtwitter.com")
-                guard let u = URL(string: api) else { completion(.failure(ExError.invalidURL)); return }
-                URLSession.shared.dataTask(with: u) { data, _, _ in
-                    guard let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let tw = j["tweet"] as? [String: Any] else { completion(.failure(ExError.noStreams)); return }
-                    var streams: [ExtractedStream] = []
-                    if let m = tw["media"] as? [String: Any], let vs = m["videos"] as? [[String: Any]] {
-                        for v in vs { if let vu = v["url"] as? String { streams.append(ExtractedStream(url: vu, quality: .p720, headers: [:], filename: nil, hasAudio: true, container: "mp4")) } }
-                    }
-                    let title = String((tw["text"] as? String ?? "Twitter Video").prefix(60))
-                    streams.isEmpty ? completion(.failure(ExError.noStreams)) : completion(.success(ExtractedVideo(title: title, streams: streams, thumbnail: nil, sourceType: .twitter)))
-                }.resume()
-            }
-
-            private func redditExtract(_ url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                var jurl = url; if !jurl.hasSuffix(".json") { jurl += (jurl.hasSuffix("/") ? ".json" : "/.json") }
-                guard let u = URL(string: jurl) else { completion(.failure(ExError.invalidURL)); return }
-                var req = URLRequest(url: u); req.setValue("VideoFlow/7.0", forHTTPHeaderField: "User-Agent")
-                URLSession.shared.dataTask(with: req) { data, _, _ in
-                    guard let data = data, let arr = try? JSONSerialization.jsonObject(with: data) as? [Any],
-                          let first = arr.first as? [String: Any], let pd = first["data"] as? [String: Any],
-                          let ch = pd["children"] as? [[String: Any]], let post = ch.first?["data"] as? [String: Any] else { completion(.failure(ExError.noStreams)); return }
-                    let title = post["title"] as? String ?? "Reddit Video"
-                    if let m = post["media"] as? [String: Any], let rv = m["reddit_video"] as? [String: Any], let fu = rv["fallback_url"] as? String {
-                        completion(.success(ExtractedVideo(title: title, streams: [ExtractedStream(url: fu, quality: .p720, headers: [:], filename: nil, hasAudio: true, container: "mp4")], thumbnail: nil, sourceType: .reddit)))
-                    } else { completion(.failure(ExError.noStreams)) }
-                }.resume()
-            }
-
-            private func instagramExtract(_ url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                guard let u = URL(string: url) else { completion(.failure(ExError.invalidURL)); return }
-                var req = URLRequest(url: u)
-                req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
-                URLSession.shared.dataTask(with: req) { data, _, _ in
-                    guard let data = data, let html = String(data: data, encoding: .utf8) else { completion(.failure(ExError.noStreams)); return }
-                    for p in ["\"video_url\":\"([^\"]+)\"", "\"contentUrl\":\"([^\"]+\\.mp4[^\"]*)\""] {
-                        if let rx = try? NSRegularExpression(pattern: p), let m = rx.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)), let r = Range(m.range(at: 1), in: html) {
-                            let vu = String(html[r]).replacingOccurrences(of: "\\u0026", with: "&").replacingOccurrences(of: "\\/", with: "/")
-                            if vu.hasPrefix("http") {
-                                completion(.success(ExtractedVideo(title: "Instagram Video", streams: [ExtractedStream(url: vu, quality: .p720, headers: ["Referer": "https://www.instagram.com/"], filename: nil, hasAudio: true, container: "mp4")], thumbnail: nil, sourceType: .instagram)))
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            self.current_process = ydl
+                            info = ydl.extract_info(url, download=True)
+                            if self.is_cancelled:
+                                if error_callback:
+                                    error_callback("Download cancelled")
                                 return
-                            }
-                        }
-                    }
-                    completion(.failure(ExError.noStreams))
-                }.resume()
-            }
+                            filename = ydl.prepare_filename(info)
+                            if is_audio:
+                                filename = os.path.splitext(filename)[0] + '.mp3'
+                            self._save_to_history({
+                                'title': info.get('title', 'Unknown'),
+                                'url': url,
+                                'filename': filename,
+                                'filesize': os.path.getsize(filename) if os.path.exists(filename) else 0,
+                                'duration': info.get('duration', 0),
+                                'thumbnail': info.get('thumbnail', ''),
+                                'download_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                'extractor': info.get('extractor', ''),
+                            })
+                            if complete_callback:
+                                complete_callback(filename)
+                    except Exception as e:
+                        if error_callback and not self.is_cancelled:
+                            error_callback(str(e))
+                    finally:
+                        self.is_downloading = False
+                        self.current_process = None
 
-            private func facebookExtract(_ url: String, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                let mu = url.replacingOccurrences(of: "www.facebook.com", with: "m.facebook.com")
-                guard let u = URL(string: mu) else { completion(.failure(ExError.invalidURL)); return }
-                var req = URLRequest(url: u); req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
-                URLSession.shared.dataTask(with: req) { data, _, _ in
-                    guard let data = data, let html = String(data: data, encoding: .utf8) else { completion(.failure(ExError.noStreams)); return }
-                    var streams: [ExtractedStream] = []
-                    let hdrs = ["Referer": "https://www.facebook.com/"]
-                    for (p, q) in [("hd_src\":\"([^\"]+)\"", VideoQuality.p1080), ("sd_src\":\"([^\"]+)\"", VideoQuality.p480)] {
-                        if let rx = try? NSRegularExpression(pattern: p), let m = rx.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)), let r = Range(m.range(at: 1), in: html) {
-                            let vu = String(html[r]).replacingOccurrences(of: "\\/", with: "/").replacingOccurrences(of: "\\u0026", with: "&")
-                            if !streams.contains(where: { $0.quality == q }) { streams.append(ExtractedStream(url: vu, quality: q, headers: hdrs, filename: nil, hasAudio: true, container: "mp4")) }
-                        }
-                    }
-                    streams.isEmpty ? completion(.failure(ExError.noStreams)) : completion(.success(ExtractedVideo(title: "Facebook Video", streams: streams, thumbnail: nil, sourceType: .facebook)))
-                }.resume()
-            }
+                thread = threading.Thread(target=_download_thread, daemon=True)
+                thread.start()
 
-            private func tryCobaltChain(url: String, quality: VideoQuality, audioOnly: Bool, idx: Int, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                guard idx < cobaltMirrors.count else { completion(.failure(ExError.allFailed("Cobalt"))); return }
-                cobaltRequest(mirror: cobaltMirrors[idx], videoURL: url, quality: quality.cobaltValue, audioOnly: audioOnly) { [weak self] r in
-                    switch r {
-                    case .success(let v): completion(.success(v))
-                    case .failure: self?.tryCobaltChain(url: url, quality: quality, audioOnly: audioOnly, idx: idx + 1, completion: completion)
-                    }
-                }
-            }
+            def cancel_download(self):
+                self.is_cancelled = True
 
-            private func cobaltRequest(mirror: String, videoURL: String, quality: String, audioOnly: Bool, completion: @escaping (Result<ExtractedVideo, Error>) -> Void) {
-                guard let api = URL(string: mirror) else { completion(.failure(ExError.invalidURL)); return }
-                var req = URLRequest(url: api); req.httpMethod = "POST"; req.timeoutInterval = 20
-                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                req.setValue("application/json", forHTTPHeaderField: "Accept")
-                req.setValue("VideoFlow/7.0", forHTTPHeaderField: "User-Agent")
-                let body: [String: Any] = ["url": videoURL, "videoQuality": quality, "audioFormat": "mp3", "audioBitrate": "320", "filenameStyle": "pretty", "downloadMode": audioOnly ? "audio" : "auto", "youtubeVideoCodec": "h264", "tiktokFullAudio": true, "tiktokH265": false]
-                req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            def _progress_hook(self, d, callback):
+                if self.is_cancelled:
+                    raise Exception("Download cancelled")
+                if callback and d['status'] == 'downloading':
+                    total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+                    downloaded = d.get('downloaded_bytes', 0)
+                    speed = d.get('speed', 0)
+                    eta = d.get('eta', 0)
+                    progress = (downloaded / total * 100) if total > 0 else 0
+                    callback({
+                        'progress': progress,
+                        'downloaded': self._format_size(downloaded),
+                        'total': self._format_size(total),
+                        'speed': self._format_size(speed) + '/s' if speed else 'Calculating...',
+                        'eta': self._format_duration(eta) if eta else 'Calculating...',
+                    })
 
-                URLSession.shared.dataTask(with: req) { [weak self] data, _, error in
-                    if error != nil { completion(.failure(ExError.noStreams)); return }
-                    guard let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { completion(.failure(ExError.noStreams)); return }
-                    let site = self?.detectSite(videoURL) ?? .other
+            def _save_to_history(self, entry):
+                history = self._load_history()
+                history.insert(0, entry)
+                history = history[:500]
+                with open(self.download_history_file, 'w', encoding='utf-8') as f:
+                    json.dump(history, f, ensure_ascii=False, indent=2)
 
-                    if let st = j["status"] as? String {
-                        if ["tunnel", "redirect", "stream"].contains(st), let u = j["url"] as? String {
-                            let fn = j["filename"] as? String ?? "Video"
-                            let title = fn.replacingOccurrences(of: ".mp4", with: "").replacingOccurrences(of: ".mp3", with: "")
-                            let container = fn.hasSuffix(".mp3") ? "mp3" : "mp4"
-                            completion(.success(ExtractedVideo(title: title, streams: [ExtractedStream(url: u, quality: .p1080, headers: [:], filename: fn, hasAudio: true, container: container)], thumbnail: nil, sourceType: site)))
-                        } else if st == "picker", let pk = j["picker"] as? [[String: Any]] {
-                            let ss = pk.compactMap { $0["url"] as? String }.map { ExtractedStream(url: $0, quality: .p720, headers: [:], filename: nil, hasAudio: true, container: "mp4") }
-                            ss.isEmpty ? completion(.failure(ExError.noStreams)) : completion(.success(ExtractedVideo(title: "Media", streams: ss, thumbnail: nil, sourceType: site)))
-                        } else { completion(.failure(ExError.noStreams)) }
-                    } else if let u = j["url"] as? String {
-                        completion(.success(ExtractedVideo(title: j["filename"] as? String ?? "Video", streams: [ExtractedStream(url: u, quality: .p1080, headers: [:], filename: nil, hasAudio: true, container: "mp4")], thumbnail: nil, sourceType: site)))
-                    } else { completion(.failure(ExError.noStreams)) }
-                }.resume()
-            }
-        }
-        SWIFTEOF
+            def _load_history(self):
+                try:
+                    if os.path.exists(self.download_history_file):
+                        with open(self.download_history_file, 'r', encoding='utf-8') as f:
+                            return json.load(f)
+                except:
+                    pass
+                return []
 
-        # ==========================================
-        # 11. ContentView.swift
-        # ==========================================
-        cat > VideoFlow/Views/ContentView.swift << 'SWIFTEOF'
-        import SwiftUI
+            def get_history(self):
+                return self._load_history()
 
-        struct ContentView: View {
-            @State private var selectedTab = 0
-            @EnvironmentObject var dm: DownloadManager
-            @EnvironmentObject var pm: PlayerManager
+            def clear_history(self):
+                with open(self.download_history_file, 'w', encoding='utf-8') as f:
+                    json.dump([], f)
 
-            var body: some View {
-                ZStack {
-                    TabView(selection: $selectedTab) {
-                        BrowserView().tabItem { Label("Browser", systemImage: "globe") }.tag(0)
-                        DownloadsView().tabItem { Label("Downloads", systemImage: "arrow.down.circle.fill") }.tag(1).badge(dm.activeDownloads.count)
-                        LibraryView().tabItem { Label("Library", systemImage: "play.rectangle.fill") }.tag(2).badge(dm.completedVideos.count)
-                    }.accentColor(.blue)
-                    if pm.isMinimized && pm.currentVideo != nil {
-                        VStack { Spacer(); MiniPlayerView().padding(.bottom, 55) }
-                    }
-                }
-                .sheet(isPresented: $pm.isFullScreen) {
-                    if let v = pm.currentVideo { PlayerView(video: v).environmentObject(pm) }
-                }
-            }
-        }
-        SWIFTEOF
+            def delete_history_item(self, index):
+                history = self._load_history()
+                if 0 <= index < len(history):
+                    history.pop(index)
+                    with open(self.download_history_file, 'w', encoding='utf-8') as f:
+                        json.dump(history, f, ensure_ascii=False, indent=2)
 
-        # ==========================================
-        # 12. BrowserView.swift (WITH AD BLOCKER)
-        # ==========================================
-        cat > VideoFlow/Views/BrowserView.swift << 'SWIFTEOF'
-        import SwiftUI
-        import WebKit
+            @staticmethod
+            def _format_size(size_bytes):
+                if not size_bytes:
+                    return "Unknown"
+                for unit in ['B', 'KB', 'MB', 'GB']:
+                    if size_bytes < 1024:
+                        return f"{size_bytes:.1f} {unit}"
+                    size_bytes /= 1024
+                return f"{size_bytes:.1f} TB"
 
-        struct CapturedVideo: Identifiable, Hashable {
-            let id = UUID()
-            let url: String
-            let source: String
-            let mimeType: String?
-            var quality: String {
-                let u = url.lowercased()
-                if u.contains("2160") { return "4K" }
-                if u.contains("1080") { return "1080p" }
-                if u.contains("720") { return "720p" }
-                if u.contains("480") { return "480p" }
-                if u.contains(".m3u8") { return "HLS" }
-                return "Auto"
-            }
-            var type: String {
-                let u = url.lowercased()
-                if u.contains(".mp4") { return "MP4" }
-                if u.contains(".m3u8") { return "HLS" }
-                if u.contains(".webm") { return "WebM" }
-                if u.contains(".mp3") { return "Audio" }
-                return "Video"
-            }
-            var isDirect: Bool { url.lowercased().contains(".mp4") || url.lowercased().contains(".webm") }
-            var canDownload: Bool { isDirect || url.lowercased().contains(".m3u8") }
-        }
+            @staticmethod
+            def _format_duration(seconds):
+                if not seconds:
+                    return "00:00"
+                hours = int(seconds // 3600)
+                minutes = int((seconds % 3600) // 60)
+                secs = int(seconds % 60)
+                if hours > 0:
+                    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+                return f"{minutes:02d}:{secs:02d}"
+        "@ | Out-File -FilePath downloader.py -Encoding utf8
 
-        class BrowserVM: ObservableObject {
-            @Published var urlText = ""
-            @Published var isLoading = false
-            @Published var canGoBack = false
-            @Published var canGoForward = false
-            @Published var isSecure = true
-            @Published var captured: [CapturedVideo] = []
-            @Published var adsBlocked: Int = 0
-            var seenURLs = Set<String>()
-            weak var webView: WKWebView?
-
-            init() { navigate(to: "https://www.google.com") }
-
-            func navigate(to raw: String) {
-                var s = raw.trimmingCharacters(in: .whitespaces)
-                if !s.hasPrefix("http://") && !s.hasPrefix("https://") {
-                    if s.contains(".") && !s.contains(" ") { s = "https://" + s }
-                    else { s = "https://www.google.com/search?q=\(s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s)" }
-                }
-                guard let url = URL(string: s) else { return }
-                webView?.load(URLRequest(url: url)); urlText = s
-            }
-
-            func goBack() { webView?.goBack() }
-            func goForward() { webView?.goForward() }
-            func reload() { webView?.reload() }
-            func stop() { webView?.stopLoading() }
-
-            func addCapture(url: String, source: String, mime: String? = nil) {
-                let u = url.lowercased()
-                guard !seenURLs.contains(url) else { return }
-                if u.contains("blank.mp4") { return }
-                if u.contains(".ts") && !u.contains(".mp4") && !u.contains(".m3u8") { return }
-                if u.contains("chunk") || u.contains("segment") { return }
-                if url.count < 20 { return }
-                if u.contains("thumbnail") { return }
-                
-                let isVideo = u.contains(".mp4") || u.contains(".m3u8") || u.contains(".webm") || u.contains(".mov") || u.contains(".mp3") || u.contains("googlevideo") || u.contains("fbcdn.net") || u.contains("cdninstagram") || u.contains("tiktokcdn") || (mime?.contains("video") ?? false)
-                guard isVideo else { return }
-                
-                seenURLs.insert(url)
-                let cap = CapturedVideo(url: url, source: source, mimeType: mime)
-                DispatchQueue.main.async {
-                    if cap.isDirect { self.captured.insert(cap, at: 0) }
-                    else { self.captured.append(cap) }
-                }
-            }
-
-            func clearCaptures() {
-                captured = []
-                seenURLs = []
-                adsBlocked = 0
-            }
-        }
-
-        struct DetectionJS {
-            static let source: String = {
-                var js = ""
-                js += "(function(){"
-                js += "var found=new Set();"
-                js += "function report(url,src){"
-                js += "if(!url||found.has(url))return;"
-                js += "if(url.includes('.mp4')||url.includes('.m3u8')||url.includes('.webm')||url.includes('.mov')||url.includes('.mp3')||url.includes('googlevideo')||url.includes('fbcdn.net')||url.includes('cdninstagram')||url.includes('tiktokcdn')||url.includes('videoplayback')){"
-                js += "found.add(url);"
-                js += "try{window.webkit.messageHandlers.videoCapture.postMessage({url:url,source:src});}catch(e){}"
-                js += "}"
-                js += "}"
-                js += "function scanVideos(){"
-                js += "document.querySelectorAll('video').forEach(function(v){"
-                js += "if(v.src)report(v.src,'video-tag');"
-                js += "if(v.currentSrc)report(v.currentSrc,'video-currentSrc');"
-                js += "v.querySelectorAll('source').forEach(function(s){if(s.src)report(s.src,'source-tag');});"
-                js += "});"
-                js += "}"
-                js += "var oFetch=window.fetch;"
-                js += "window.fetch=function(){"
-                js += "var url=typeof arguments[0]==='string'?arguments[0]:(arguments[0]&&arguments[0].url?arguments[0].url:'');"
-                js += "report(url,'fetch');"
-                js += "return oFetch.apply(this,arguments);"
-                js += "};"
-                js += "var oXHR=XMLHttpRequest.prototype.open;"
-                js += "XMLHttpRequest.prototype.open=function(m,url){"
-                js += "report(url,'xhr');"
-                js += "return oXHR.apply(this,arguments);"
-                js += "};"
-                js += "var obs=new MutationObserver(function(){scanVideos();});"
-                js += "if(document.body)obs.observe(document.body,{childList:true,subtree:true});"
-                js += "setInterval(scanVideos,3000);"
-                js += "setTimeout(scanVideos,1500);"
-                js += "setTimeout(scanVideos,5000);"
-                js += "})();"
-                return js
-            }()
-        }
-
-        struct SmartWebView: UIViewRepresentable {
-            @ObservedObject var vm: BrowserVM
-
-            func makeUIView(context: Context) -> WKWebView {
-                let cfg = WKWebViewConfiguration()
-                cfg.allowsInlineMediaPlayback = true
-                cfg.mediaTypesRequiringUserActionForPlayback = []
-                
-                // Inject detection JS
-                let detectionScript = WKUserScript(source: DetectionJS.source, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
-                cfg.userContentController.addUserScript(detectionScript)
-                
-                // Inject ad blocker JS
-                let adBlockScript = WKUserScript(source: AdBlocker.adBlockJS, injectionTime: .atDocumentStart, forMainFrameOnly: false)
-                cfg.userContentController.addUserScript(adBlockScript)
-                
-                cfg.userContentController.add(context.coordinator, name: "videoCapture")
-                
-                let wv = WKWebView(frame: .zero, configuration: cfg)
-                wv.navigationDelegate = context.coordinator
-                wv.uiDelegate = context.coordinator
-                wv.allowsBackForwardNavigationGestures = true
-                wv.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-                vm.webView = wv
-                return wv
-            }
-
-            func updateUIView(_ wv: WKWebView, context: Context) {}
-            func makeCoordinator() -> Coordinator { Coordinator(vm: vm) }
-
-            class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
-                let vm: BrowserVM
-                init(vm: BrowserVM) { self.vm = vm }
-
-                func userContentController(_ c: WKUserContentController, didReceive msg: WKScriptMessage) {
-                    if let body = msg.body as? [String: Any], let url = body["url"] as? String {
-                        vm.addCapture(url: url, source: body["source"] as? String ?? "js")
-                    }
-                }
-
-                func webView(_ wv: WKWebView, didStartProvisionalNavigation _: WKNavigation!) {
-                    vm.isLoading = true
-                    vm.clearCaptures()
-                }
-
-                func webView(_ wv: WKWebView, didFinish _: WKNavigation!) {
-                    vm.isLoading = false
-                    vm.canGoBack = wv.canGoBack
-                    vm.canGoForward = wv.canGoForward
-                    vm.urlText = wv.url?.absoluteString ?? ""
-                    vm.isSecure = wv.url?.scheme == "https"
-                }
-
-                func webView(_ wv: WKWebView, didFail _: WKNavigation!, withError _: Error) { vm.isLoading = false }
-
-                func webView(_ wv: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-                    if let url = action.request.url?.absoluteString {
-                        // Ad blocker: block navigation to ad domains
-                        if AdBlocker.shouldBlock(url: url) {
-                            DispatchQueue.main.async { self.vm.adsBlocked += 1 }
-                            decisionHandler(.cancel)
-                            return
-                        }
-                        vm.addCapture(url: url, source: "navigation")
-                    }
-                    decisionHandler(.allow)
-                }
-
-                func webView(_ wv: WKWebView, decidePolicyFor response: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
-                    if let url = response.response.url?.absoluteString {
-                        if AdBlocker.shouldBlock(url: url) {
-                            DispatchQueue.main.async { self.vm.adsBlocked += 1 }
-                            decisionHandler(.cancel)
-                            return
-                        }
-                    }
-                    if let http = response.response as? HTTPURLResponse {
-                        let mime = http.mimeType?.lowercased() ?? ""
-                        if mime.contains("video") || mime.contains("audio") || mime.contains("mpegurl") {
-                            if let url = http.url?.absoluteString { vm.addCapture(url: url, source: "response", mime: mime) }
-                        }
-                    }
-                    decisionHandler(.allow)
-                }
-
-                func webView(_ wv: WKWebView, createWebViewWith _: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-                    if action.targetFrame == nil { wv.load(action.request) }
-                    return nil
-                }
-            }
-        }
-
-        struct BrowserView: View {
-            @StateObject private var vm = BrowserVM()
-            @EnvironmentObject var dm: DownloadManager
-            @State private var isExtracting = false
-            @State private var showQuality = false
-            @State private var msg: String?
-            @State private var showMsg = false
-            @State private var showCaptured = false
-            @State private var extractResult: ExtractedVideo?
-            @State private var showStreams = false
-
-            var body: some View {
-                NavigationView {
-                    ZStack {
-                        Color.black.ignoresSafeArea()
-                        VStack(spacing: 0) {
-                            addressBar
-                            if vm.isLoading { ProgressView().progressViewStyle(.linear).tint(.blue).frame(height: 2) }
-                            SmartWebView(vm: vm).ignoresSafeArea(edges: .bottom)
-                            bottomBar
-                        }
-                        if isExtracting { extractingOverlay }
-                    }
-                    .navigationBarHidden(true)
-                }
-                .confirmationDialog("Download Quality", isPresented: $showQuality, titleVisibility: .visible) {
-                    Button("⚡ Best Quality") { doExtract(.p1080) }
-                    Button("4K 2160p") { doExtract(.p2160) }
-                    Button("1080p Full HD") { doExtract(.p1080) }
-                    Button("720p HD") { doExtract(.p720) }
-                    Button("480p SD") { doExtract(.p480) }
-                    Button("360p Low") { doExtract(.p360) }
-                    Button("🎵 Audio MP3") { doExtract(.audio, audio: true) }
-                    Button("Cancel", role: .cancel) {}
-                }
-                .alert("VideoFlow", isPresented: $showMsg) { Button("OK") {} } message: { Text(msg ?? "") }
-                .sheet(isPresented: $showCaptured) { CapturedSheet(captured: vm.captured, dm: dm) }
-                .sheet(isPresented: $showStreams) {
-                    if let r = extractResult { StreamsSheet(video: r) { s, q in downloadStream(s, q, r) } }
-                }
-            }
-
-            var addressBar: some View {
-                HStack(spacing: 8) {
-                    HStack(spacing: 6) {
-                        Image(systemName: vm.isSecure ? "lock.fill" : "lock.open.fill").foregroundColor(vm.isSecure ? .green : .orange).font(.system(size: 12))
-                        TextField("Search or URL...", text: $vm.urlText).foregroundColor(.white).font(.system(size: 14)).keyboardType(.URL).autocapitalization(.none).disableAutocorrection(true).onSubmit { vm.navigate(to: vm.urlText) }
-                        if !vm.urlText.isEmpty { Button { vm.urlText = "" } label: { Image(systemName: "xmark.circle.fill").foregroundColor(.gray).font(.system(size: 14)) } }
-                        // Ad blocker indicator
-                        if vm.adsBlocked > 0 {
-                            HStack(spacing: 2) {
-                                Image(systemName: "shield.fill").font(.system(size: 10)).foregroundColor(.green)
-                                Text("\(vm.adsBlocked)").font(.system(size: 10, weight: .bold)).foregroundColor(.green)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 10).padding(.vertical, 8).background(Color.white.opacity(0.1)).cornerRadius(10)
-                    Button { vm.navigate(to: vm.urlText) } label: {
-                        Text("Go").foregroundColor(.blue).font(.system(size: 14, weight: .semibold))
-                    }
-                }
-                .padding(.horizontal, 12).padding(.vertical, 8)
-            }
-
-            var bottomBar: some View {
-                HStack(spacing: 4) {
-                    bBtn("chevron.left", on: vm.canGoBack) { vm.goBack() }
-                    bBtn("chevron.right", on: vm.canGoForward) { vm.goForward() }
-                    bBtn(vm.isLoading ? "xmark" : "arrow.clockwise", on: true) { vm.isLoading ? vm.stop() : vm.reload() }
-                    Spacer()
-                    if !vm.captured.isEmpty {
-                        Button { showCaptured = true } label: {
-                            HStack(spacing: 3) {
-                                Image(systemName: "antenna.radiowaves.left.and.right").font(.system(size: 12))
-                                Text("\(vm.captured.count)").font(.system(size: 11, weight: .bold))
-                            }
-                            .foregroundColor(.white).padding(.horizontal, 8).padding(.vertical, 6).background(Color.green).cornerRadius(14)
-                        }
-                    }
-                    Button { showQuality = true } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.down.circle.fill").font(.system(size: 15))
-                            Text("Download").font(.system(size: 12, weight: .bold))
-                        }
-                        .foregroundColor(.white).padding(.horizontal, 12).padding(.vertical, 8)
-                        .background(LinearGradient(colors: [.red, .orange], startPoint: .leading, endPoint: .trailing)).cornerRadius(18)
-                    }.disabled(isExtracting)
-                    Spacer()
-                    bBtn("house.fill", on: true) { vm.navigate(to: "https://www.google.com") }
-                    bBtn("square.and.arrow.up", on: true) { shareURL() }
-                }
-                .padding(.horizontal, 12).padding(.vertical, 8).background(Color.white.opacity(0.05))
-            }
-
-            var extractingOverlay: some View {
-                Color.black.opacity(0.7).ignoresSafeArea().overlay(
-                    VStack(spacing: 14) {
-                        ProgressView().tint(.white).scaleEffect(1.8)
-                        Text("Extracting Video...").foregroundColor(.white).font(.headline)
-                        Text("Multi-threaded IDM engine").foregroundColor(.gray).font(.caption)
-                    }
-                    .padding(30).background(RoundedRectangle(cornerRadius: 18).fill(Color(.systemGray6).opacity(0.95)))
-                )
-            }
-
-            func bBtn(_ icon: String, on: Bool, action: @escaping () -> Void) -> some View {
-                Button(action: action) { Image(systemName: icon).font(.system(size: 18)).foregroundColor(on ? .white : .gray.opacity(0.3)).frame(width: 38, height: 38) }.disabled(!on)
-            }
-
-            func doExtract(_ q: VideoQuality, audio: Bool = false) {
-                guard let url = vm.webView?.url?.absoluteString else { msg = "No URL"; showMsg = true; return }
-                isExtracting = true
-                let capturedURLs = vm.captured.map { $0.url }
-                UltimateExtractor.shared.extract(from: url, quality: q, audioOnly: audio, capturedURLs: capturedURLs) { r in
-                    DispatchQueue.main.async {
-                        isExtracting = false
-                        switch r {
-                        case .success(let v):
-                            if v.streams.count == 1 {
-                                downloadStream(v.streams[0], q, v)
-                                msg = "✅ Download started!\n\n\(v.title)"
-                                showMsg = true
-                            } else {
-                                extractResult = v
-                                showStreams = true
-                            }
-                        case .failure(let e):
-                            let downloadable = vm.captured.filter { $0.canDownload }
-                            if !downloadable.isEmpty {
-                                msg = "❌ Auto extraction failed.\n\n💡 \(downloadable.count) video(s) captured - tap GREEN badge"
-                            } else {
-                                msg = "❌ \(e.localizedDescription)"
-                            }
-                            showMsg = true
-                        }
-                    }
-                }
-            }
-
-            func downloadStream(_ s: ExtractedStream, _ q: VideoQuality, _ v: ExtractedVideo) {
-                let video = VideoItem(id: UUID().uuidString, title: v.title, url: s.url, thumbnailURL: v.thumbnail, availableQualities: [q], sourceType: v.sourceType, headers: s.headers)
-                dm.startDownload(video: video, quality: q)
-            }
-
-            func shareURL() {
-                guard let url = vm.webView?.url else { return }
-                let vc = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-                if let sc = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                   let root = sc.windows.first?.rootViewController {
-                    root.present(vc, animated: true)
-                }
-            }
-        }
-
-        struct CapturedSheet: View {
-            let captured: [CapturedVideo]
-            let dm: DownloadManager
-            @Environment(\.dismiss) var dismiss
-            var body: some View {
-                NavigationView {
-                    List {
-                        Section {
-                            HStack {
-                                Image(systemName: "bolt.fill").foregroundColor(.orange)
-                                Text("IDM Engine: 8-thread parallel download for MP4").font(.caption).foregroundColor(.secondary)
-                            }
-                        }
-                        Section("Captured (\(captured.count))") {
-                            ForEach(captured) { cap in
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack(spacing: 8) {
-                                        Text(cap.type).font(.system(size: 10, weight: .bold)).foregroundColor(.white)
-                                            .padding(.horizontal, 8).padding(.vertical, 3).background(cap.isDirect ? Color.green : Color.orange).cornerRadius(4)
-                                        Text(cap.quality).font(.system(size: 10, weight: .bold)).foregroundColor(.white)
-                                            .padding(.horizontal, 8).padding(.vertical, 3).background(Color.blue).cornerRadius(4)
-                                        Spacer()
-                                        Button {
-                                            let st: VideoSourceType = cap.url.contains(".m3u8") ? .hls : .direct
-                                            let v = VideoItem(id: UUID().uuidString, title: "\(cap.type)_\(cap.quality)_\(Int(Date().timeIntervalSince1970))", url: cap.url, availableQualities: [.p720], sourceType: st)
-                                            dm.startDownload(video: v, quality: .p720)
-                                            dismiss()
-                                        } label: {
-                                            Image(systemName: "arrow.down.circle.fill").font(.system(size: 26)).foregroundColor(cap.canDownload ? .blue : .gray)
-                                        }.disabled(!cap.canDownload)
-                                    }
-                                    Text(String(cap.url.prefix(100))).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary).lineLimit(3)
-                                }.padding(.vertical, 6)
-                            }
-                        }
-                    }
-                    .navigationTitle("Captured (\(captured.count))").navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() } } }
-                }
-            }
-        }
-
-        struct StreamsSheet: View {
-            let video: ExtractedVideo
-            let onSelect: (ExtractedStream, VideoQuality) -> Void
-            @Environment(\.dismiss) var dismiss
-            var body: some View {
-                NavigationView {
-                    List {
-                        Section { HStack { Image(systemName: "info.circle.fill").foregroundColor(.blue); Text(video.title).font(.system(size: 14, weight: .medium)).lineLimit(2) } }
-                        Section("Streams (\(video.streams.count))") {
-                            ForEach(Array(video.streams.enumerated()), id: \.offset) { i, s in
-                                Button { onSelect(s, s.quality); dismiss() } label: {
-                                    HStack {
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            Text(s.quality.displayName).font(.system(size: 15, weight: .semibold)).foregroundColor(.primary)
-                                            HStack(spacing: 5) {
-                                                Text(s.hasAudio ? "🔊 Audio" : "🎬 Video Only").font(.caption)
-                                                Text("• \(s.container.uppercased())").font(.caption)
-                                            }.foregroundColor(.blue)
-                                        }
-                                        Spacer()
-                                        Text(s.quality.rawValue).font(.system(size: 11, weight: .bold)).foregroundColor(.white).padding(.horizontal, 8).padding(.vertical, 3).background(s.quality.color).cornerRadius(6)
-                                        Image(systemName: "arrow.down.circle.fill").foregroundColor(.blue).font(.system(size: 22))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    .navigationTitle("Choose Stream").navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Cancel") { dismiss() } } }
-                }
-            }
-        }
-        SWIFTEOF
-
-        # ==========================================
-        # 13. DownloadsView.swift (WITH THREAD COUNT)
-        # ==========================================
-        cat > VideoFlow/Views/DownloadsView.swift << 'SWIFTEOF'
-        import SwiftUI
-
-        struct DownloadsView: View {
-            @EnvironmentObject var dm: DownloadManager
-            @EnvironmentObject var pm: PlayerManager
-            @State private var tab = 0
-            var body: some View {
-                NavigationView {
-                    VStack(spacing: 0) {
-                        Picker("", selection: $tab) {
-                            Text("Active (\(dm.activeDownloads.count))").tag(0)
-                            Text("Done (\(dm.completedVideos.count))").tag(1)
-                        }.pickerStyle(.segmented).padding()
-                        if tab == 0 {
-                            if dm.activeDownloads.isEmpty { EmptyV(icon: "arrow.down.circle", t: "No Downloads", s: "Tap Download in browser") }
-                            else {
-                                List(dm.activeDownloads) { t in
-                                    ActiveRow(task: t, onP: { dm.pauseDownload(t) }, onR: { dm.resumeDownload(t) }, onC: { dm.cancelDownload(t) }, onRetry: { dm.retryDownload(t) })
-                                }.listStyle(.plain)
-                            }
-                        } else {
-                            if dm.completedVideos.isEmpty { EmptyV(icon: "checkmark.circle", t: "No Videos", s: "Downloads appear here") }
-                            else { List(dm.completedVideos) { t in DoneRow(task: t, onPlay: { pm.playVideo(t) }, onDel: { dm.deleteVideo(t) }) }.listStyle(.plain) }
-                        }
-                    }.navigationTitle("Downloads")
-                }
-            }
-        }
-
-        struct ActiveRow: View {
-            @ObservedObject var task: DownloadTask
-            let onP: () -> Void
-            let onR: () -> Void
-            let onC: () -> Void
-            let onRetry: () -> Void
-
-            var isFailed: Bool { if case .failed = task.status { return true }; return false }
-            var isConverting: Bool { if case .converting = task.status { return true }; return false }
-
-            var body: some View {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(task.video.title).font(.system(size: 14, weight: .medium)).lineLimit(2)
-                            HStack(spacing: 6) {
-                                Text(task.quality.rawValue).font(.caption).foregroundColor(.white).padding(.horizontal, 6).padding(.vertical, 2).background(task.quality.color).cornerRadius(4)
-                                if task.video.isHLS {
-                                    Text("HLS").font(.caption).foregroundColor(.white).padding(.horizontal, 6).padding(.vertical, 2).background(Color.purple).cornerRadius(4)
-                                }
-                                if task.activeThreads > 0 {
-                                    HStack(spacing: 2) {
-                                        Image(systemName: "bolt.fill").font(.system(size: 9))
-                                        Text("\(task.activeThreads)x").font(.system(size: 10, weight: .bold))
-                                    }
-                                    .foregroundColor(.white).padding(.horizontal, 5).padding(.vertical, 2).background(Color.orange).cornerRadius(4)
-                                }
-                                Text(task.status.displayText).font(.caption).foregroundColor(isFailed ? .red : isConverting ? .purple : .secondary).lineLimit(2)
-                                if !task.speed.isEmpty && !isFailed && !isConverting { Text(task.speed).font(.caption).foregroundColor(.blue).fontWeight(.semibold) }
-                            }
-                            if !isFailed { Text(task.sizeText).font(.caption2).foregroundColor(.secondary) }
-                        }
-                        Spacer()
-                        HStack(spacing: 8) {
-                            if isFailed {
-                                Button(action: onRetry) { Image(systemName: "arrow.clockwise.circle.fill").font(.system(size: 28)).foregroundColor(.blue) }
-                            }
-                            Button(action: onC) { Image(systemName: "xmark.circle.fill").font(.system(size: 28)).foregroundColor(.red) }
-                        }
-                    }
-                    if !isFailed {
-                        GeometryReader { g in
-                            ZStack(alignment: .leading) {
-                                RoundedRectangle(cornerRadius: 3).fill(Color(.systemGray5)).frame(height: 6)
-                                RoundedRectangle(cornerRadius: 3).fill(LinearGradient(colors: [.blue, .cyan], startPoint: .leading, endPoint: .trailing)).frame(width: g.size.width * task.progress, height: 6).animation(.linear(duration: 0.3), value: task.progress)
-                            }
-                        }.frame(height: 6)
-                    }
-                }.padding(.vertical, 6)
-            }
-        }
-
-        struct DoneRow: View {
-            let task: DownloadTask
-            let onPlay: () -> Void
-            let onDel: () -> Void
-            var body: some View {
-                HStack(spacing: 12) {
-                    Button(action: onPlay) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.2)).frame(width: 75, height: 48)
-                            Image(systemName: "play.circle.fill").foregroundColor(.blue).font(.system(size: 26))
-                        }
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(task.video.title).font(.system(size: 14, weight: .medium)).lineLimit(2)
-                        Text(task.quality.rawValue).font(.caption).foregroundColor(.white).padding(.horizontal, 6).padding(.vertical, 2).background(task.quality.color).cornerRadius(4)
-                    }
-                    Spacer()
-                    VStack(spacing: 8) {
-                        if let u = task.savedURL { ShareLink(item: u) { Image(systemName: "square.and.arrow.up").foregroundColor(.blue) } }
-                        Button(action: onDel) { Image(systemName: "trash.fill").foregroundColor(.red) }
-                    }
-                }.padding(.vertical, 4)
-            }
-        }
-
-        struct EmptyV: View {
-            let icon: String
-            let t: String
-            let s: String
-            var body: some View {
-                VStack(spacing: 14) {
-                    Image(systemName: icon).font(.system(size: 50)).foregroundColor(.gray.opacity(0.5))
-                    Text(t).font(.title3).fontWeight(.semibold)
-                    Text(s).font(.subheadline).foregroundColor(.secondary)
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        SWIFTEOF
-
-        # ==========================================
-        # 14. PlayerView.swift
-        # ==========================================
-        cat > VideoFlow/Views/PlayerView.swift << 'SWIFTEOF'
-        import SwiftUI
-        import AVKit
-        import AVFoundation
-
-        struct PlayerView: View {
-            let video: DownloadTask
-            @EnvironmentObject var pm: PlayerManager
-            @State private var showCtrl = true
-            @State private var timer: Timer?
-            @State private var showSpd = false
-            @State private var brightness = UIScreen.main.brightness
-
-            var body: some View {
-                ZStack {
-                    Color.black.ignoresSafeArea()
-                    if let p = pm.player { VPLayer(player: p).ignoresSafeArea().onTapGesture { toggle() } }
-                    if pm.isLoading { ProgressView().tint(.white).scaleEffect(2) }
-                    if let err = pm.errorMessage {
-                        VStack(spacing: 10) {
-                            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 40)).foregroundColor(.red)
-                            Text(err).foregroundColor(.white).multilineTextAlignment(.center)
-                            Button("Close") { pm.close() }.foregroundColor(.blue).padding().background(Color.white.opacity(0.1)).cornerRadius(10)
-                        }.padding()
-                    }
-                    HStack(spacing: 0) {
-                        Color.clear.contentShape(Rectangle()).onTapGesture(count: 2) { pm.skipBackward(10) }
-                        Color.clear.contentShape(Rectangle()).onTapGesture { toggle() }
-                        Color.clear.contentShape(Rectangle()).onTapGesture(count: 2) { pm.skipForward(10) }
-                    }
-                    if showCtrl && pm.errorMessage == nil { ctrlOverlay }
-                }
-                .onAppear { pm.playVideo(video); startT() }
-                .gesture(DragGesture().onChanged { v in
-                    let d = v.translation.height / 500
-                    if v.startLocation.x < UIScreen.main.bounds.width / 2 {
-                        brightness = max(0, min(1, brightness - d)); UIScreen.main.brightness = brightness
-                    } else {
-                        pm.setVolume(max(0, min(1, pm.volume - Float(d))))
-                    }
-                })
-                .sheet(isPresented: $showSpd) { SpdPicker().environmentObject(pm).presentationDetents([.height(300)]) }
-            }
-
-            var ctrlOverlay: some View {
-                VStack {
-                    HStack {
-                        Button { pm.close() } label: { Image(systemName: "xmark").font(.system(size: 16, weight: .bold)).foregroundColor(.white).padding(10).background(Color.black.opacity(0.5)).clipShape(Circle()) }
-                        Spacer()
-                        Text(pm.currentVideo?.video.title ?? "").foregroundColor(.white).font(.system(size: 13, weight: .medium)).lineLimit(1).frame(maxWidth: 200)
-                        Spacer()
-                        HStack(spacing: 8) {
-                            Button { showSpd = true } label: { Text(String(format: "%.1fx", pm.playbackSpeed)).foregroundColor(.white).font(.system(size: 12, weight: .bold)).padding(.horizontal, 7).padding(.vertical, 3).background(Color.black.opacity(0.5)).cornerRadius(5) }
-                            Button { pm.minimize() } label: { Image(systemName: "pip.enter").font(.system(size: 16)).foregroundColor(.white).padding(10).background(Color.black.opacity(0.5)).clipShape(Circle()) }
-                        }
-                    }.padding(.horizontal, 18).padding(.top, 18)
-                    Spacer()
-                    HStack(spacing: 30) {
-                        Button { pm.skipBackward(30) } label: { Image(systemName: "gobackward.30").font(.system(size: 26)).foregroundColor(.white) }
-                        Button { pm.skipBackward(10) } label: { Image(systemName: "gobackward.10").font(.system(size: 32)).foregroundColor(.white) }
-                        Button { pm.togglePlayPause() } label: { Image(systemName: pm.isPlaying ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 60)).foregroundColor(.white) }
-                        Button { pm.skipForward(10) } label: { Image(systemName: "goforward.10").font(.system(size: 32)).foregroundColor(.white) }
-                        Button { pm.skipForward(30) } label: { Image(systemName: "goforward.30").font(.system(size: 26)).foregroundColor(.white) }
-                    }
-                    Spacer()
-                    VStack(spacing: 8) {
-                        Slider(value: Binding(get: { pm.currentTime }, set: { pm.seek(to: $0) }), in: 0...max(pm.duration, 1)).accentColor(.white)
-                        HStack {
-                            Text(pm.fmt(pm.currentTime)).font(.caption).foregroundColor(.white.opacity(0.8))
-                            Spacer()
-                            Text(pm.fmt(pm.duration)).font(.caption).foregroundColor(.white.opacity(0.8))
-                        }
-                        HStack(spacing: 8) {
-                            Button { pm.isMuted.toggle(); pm.player?.isMuted = pm.isMuted } label: { Image(systemName: pm.isMuted ? "speaker.slash.fill" : "speaker.fill").foregroundColor(.white) }
-                            Slider(value: Binding(get: { Double(pm.volume) }, set: { pm.setVolume(Float($0)) }), in: 0...1).accentColor(.white)
-                            Image(systemName: "speaker.wave.3.fill").foregroundColor(.white)
-                        }
-                    }.padding(.horizontal, 18).padding(.bottom, 28)
-                }.background(LinearGradient(colors: [.black.opacity(0.7), .clear, .clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom))
-                .transition(.opacity).animation(.easeInOut(duration: 0.2), value: showCtrl)
-            }
-
-            func toggle() { withAnimation { showCtrl.toggle() }; if showCtrl { startT() } else { timer?.invalidate() } }
-            func startT() { timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { _ in withAnimation { showCtrl = false } } }
-        }
-
-        struct VPLayer: UIViewRepresentable {
-            let player: AVPlayer
-            func makeUIView(context: Context) -> VPView { VPView(player: player) }
-            func updateUIView(_ v: VPView, context: Context) {}
-            class VPView: UIView {
-                override class var layerClass: AnyClass { AVPlayerLayer.self }
-                var pl: AVPlayerLayer { layer as! AVPlayerLayer }
-                init(player: AVPlayer) { super.init(frame: .zero); pl.player = player; pl.videoGravity = .resizeAspect }
-                required init?(coder: NSCoder) { fatalError() }
-            }
-        }
-
-        struct SpdPicker: View {
-            @EnvironmentObject var pm: PlayerManager
-            @Environment(\.dismiss) var dismiss
-            let speeds: [Float] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
-            var body: some View {
-                NavigationView {
-                    List(speeds, id: \.self) { s in
-                        Button { pm.setSpeed(s); dismiss() } label: {
-                            HStack { Text(String(format: "%.2fx", s)); Spacer(); if pm.playbackSpeed == s { Image(systemName: "checkmark").foregroundColor(.blue) } }
-                        }
-                    }.navigationTitle("Speed").navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() } } }
-                }
-            }
-        }
-
-        struct MiniPlayerView: View {
-            @EnvironmentObject var pm: PlayerManager
-            var body: some View {
-                HStack(spacing: 10) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 6).fill(Color.blue.opacity(0.3)).frame(width: 50, height: 34)
-                        Image(systemName: "play.fill").foregroundColor(.blue).font(.system(size: 13))
-                    }
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(pm.currentVideo?.video.title ?? "").font(.system(size: 12, weight: .medium)).foregroundColor(.white).lineLimit(1)
-                        GeometryReader { g in
-                            ZStack(alignment: .leading) {
-                                Capsule().fill(Color.white.opacity(0.2)).frame(height: 2)
-                                Capsule().fill(Color.blue).frame(width: g.size.width * pm.progress, height: 2)
-                            }
-                        }.frame(height: 2)
-                    }
-                    Spacer()
-                    Button { pm.togglePlayPause() } label: { Image(systemName: pm.isPlaying ? "pause.fill" : "play.fill").foregroundColor(.white).font(.system(size: 16)) }
-                    Button { pm.close() } label: { Image(systemName: "xmark").foregroundColor(.white).font(.system(size: 14)) }
-                }
-                .padding(.horizontal, 14).padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(.systemGray6).opacity(0.95)).shadow(color: .black.opacity(0.3), radius: 8))
-                .padding(.horizontal, 10)
-                .onTapGesture { pm.isFullScreen = true; pm.isMinimized = false }
-            }
-        }
-        SWIFTEOF
-
-        # ==========================================
-        # 15. LibraryView.swift
-        # ==========================================
-        cat > VideoFlow/Views/LibraryView.swift << 'SWIFTEOF'
-        import SwiftUI
-
-        struct LibraryView: View {
-            @EnvironmentObject var dm: DownloadManager
-            @EnvironmentObject var pm: PlayerManager
-            @State private var search = ""
-            var filtered: [DownloadTask] { search.isEmpty ? dm.completedVideos : dm.completedVideos.filter { $0.video.title.localizedCaseInsensitiveContains(search) } }
-            var body: some View {
-                NavigationView {
-                    Group {
-                        if filtered.isEmpty { EmptyV(icon: "play.rectangle.fill", t: "Library Empty", s: "Downloaded videos appear here") }
-                        else {
-                            ScrollView {
-                                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                                    ForEach(filtered) { t in
-                                        Button { pm.playVideo(t) } label: {
-                                            VStack(alignment: .leading, spacing: 5) {
-                                                ZStack {
-                                                    RoundedRectangle(cornerRadius: 10).fill(Color.blue.opacity(0.2)).aspectRatio(16/9, contentMode: .fit)
-                                                    Image(systemName: "play.circle.fill").font(.system(size: 36)).foregroundColor(.blue)
-                                                }
-                                                Text(t.video.title).font(.system(size: 12, weight: .medium)).foregroundColor(.primary).lineLimit(2).multilineTextAlignment(.leading)
-                                                Text(t.quality.rawValue).font(.system(size: 10, weight: .bold)).foregroundColor(.white).padding(.horizontal, 5).padding(.vertical, 2).background(t.quality.color).cornerRadius(4)
-                                            }
-                                        }.buttonStyle(.plain)
-                                    }
-                                }.padding()
-                            }
-                        }
-                    }
-                    .searchable(text: $search, prompt: "Search").navigationTitle("Library")
-                }
-            }
-        }
-        SWIFTEOF
-
-        # Assets
-        cat > VideoFlow/Resources/Assets.xcassets/Contents.json << 'EOF'
-        {"info":{"author":"xcode","version":1}}
-        EOF
-        cat > VideoFlow/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json << 'EOF'
-        {"images":[{"idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}
-        EOF
-        cat > VideoFlow/Resources/Assets.xcassets/AccentColor.colorset/Contents.json << 'EOF'
-        {"colors":[{"color":{"colorSpace":"sRGB","components":{"alpha":"1.000","blue":"1.000","green":"0.478","red":"0.000"}},"idiom":"universal"}],"info":{"author":"xcode","version":1}}
-        EOF
-
-        cat > VideoFlow/Resources/Info.plist << 'EOF'
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-            <key>CFBundleDisplayName</key><string>VideoFlow</string>
-            <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
-            <key>CFBundleIdentifier</key><string>com.videoflow.app</string>
-            <key>CFBundleName</key><string>VideoFlow</string>
-            <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>7.0</string>
-            <key>CFBundleVersion</key><string>7</string>
-            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-            <key>LSRequiresIPhoneOS</key><true/>
-            <key>MinimumOSVersion</key><string>16.0</string>
-            <key>UIApplicationSupportsIndirectInputEvents</key><true/>
-            <key>UILaunchScreen</key><dict/>
-            <key>UISupportedInterfaceOrientations</key>
-            <array>
-                <string>UIInterfaceOrientationPortrait</string>
-                <string>UIInterfaceOrientationLandscapeLeft</string>
-                <string>UIInterfaceOrientationLandscapeRight</string>
-            </array>
-            <key>NSAppTransportSecurity</key>
-            <dict>
-                <key>NSAllowsArbitraryLoads</key><true/>
-                <key>NSAllowsArbitraryLoadsInWebContent</key><true/>
-            </dict>
-            <key>UIBackgroundModes</key>
-            <array>
-                <string>audio</string>
-                <string>fetch</string>
-            </array>
-            <key>UIFileSharingEnabled</key><true/>
-            <key>LSSupportsOpeningDocumentsInPlace</key><true/>
-        </dict>
-        </plist>
-        EOF
-
-        echo "All files created!"
-
-    - name: Create Xcode Project File
+    # ==========================================
+    # ملف player.py - مشغل الفيديو
+    # ==========================================
+    - name: Create player.py
+      shell: pwsh
       run: |
-        cat > VideoFlow.xcodeproj/project.pbxproj << 'PBXEOF'
-        // !$*UTF8*$!
-        {
-        	archiveVersion = 1;
-        	classes = {};
-        	objectVersion = 56;
-        	objects = {
-        		A01={isa=PBXBuildFile;fileRef=B01;};
-        		A02={isa=PBXBuildFile;fileRef=B02;};
-        		A03={isa=PBXBuildFile;fileRef=B03;};
-        		A04={isa=PBXBuildFile;fileRef=B04;};
-        		A05={isa=PBXBuildFile;fileRef=B05;};
-        		A06={isa=PBXBuildFile;fileRef=B06;};
-        		A07={isa=PBXBuildFile;fileRef=B07;};
-        		A08={isa=PBXBuildFile;fileRef=B08;};
-        		A09={isa=PBXBuildFile;fileRef=B09;};
-        		A10={isa=PBXBuildFile;fileRef=B10;};
-        		A11={isa=PBXBuildFile;fileRef=B11;};
-        		A12={isa=PBXBuildFile;fileRef=B12;};
-        		A13={isa=PBXBuildFile;fileRef=B13;};
-        		A14={isa=PBXBuildFile;fileRef=B14;};
-        		A15={isa=PBXBuildFile;fileRef=B15;};
-        		A16={isa=PBXBuildFile;fileRef=B16;};
-        		B01={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=VideoFlowApp.swift;sourceTree="<group>";};
-        		B02={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=AppDelegate.swift;sourceTree="<group>";};
-        		B03={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=VideoItem.swift;sourceTree="<group>";};
-        		B04={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=DownloadTask.swift;sourceTree="<group>";};
-        		B05={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=AdBlocker.swift;sourceTree="<group>";};
-        		B06={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=IDMDownloader.swift;sourceTree="<group>";};
-        		B07={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=HLSDownloader.swift;sourceTree="<group>";};
-        		B08={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=DownloadManager.swift;sourceTree="<group>";};
-        		B09={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=PlayerManager.swift;sourceTree="<group>";};
-        		B10={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=UltimateExtractor.swift;sourceTree="<group>";};
-        		B11={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=ContentView.swift;sourceTree="<group>";};
-        		B12={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=BrowserView.swift;sourceTree="<group>";};
-        		B13={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=DownloadsView.swift;sourceTree="<group>";};
-        		B14={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=PlayerView.swift;sourceTree="<group>";};
-        		B15={isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=LibraryView.swift;sourceTree="<group>";};
-        		B16={isa=PBXFileReference;lastKnownFileType=folder.assetcatalog;path=Assets.xcassets;sourceTree="<group>";};
-        		B17={isa=PBXFileReference;lastKnownFileType=text.plist.xml;path=Info.plist;sourceTree="<group>";};
-        		C01={isa=PBXFileReference;explicitFileType=wrapper.application;includeInIndex=0;path=VideoFlow.app;sourceTree=BUILT_PRODUCTS_DIR;};
-        		D01={isa=PBXFrameworksBuildPhase;buildActionMask=2147483647;files=();runOnlyForDeploymentPostprocessing=0;};
-        		E01={isa=PBXGroup;children=(E02,E10);sourceTree="<group>";};
-        		E02={isa=PBXGroup;children=(E03,E04,E05,E06,E07,E08,E09);path=VideoFlow;sourceTree="<group>";};
-        		E03={isa=PBXGroup;children=(B01,B02);name=App;path=App;sourceTree="<group>";};
-        		E04={isa=PBXGroup;children=(B11,B12,B13,B14,B15);name=Views;path=Views;sourceTree="<group>";};
-        		E05={isa=PBXGroup;children=(B03,B04);name=Models;path=Models;sourceTree="<group>";};
-        		E06={isa=PBXGroup;children=(B06,B07,B08,B09);name=Services;path=Services;sourceTree="<group>";};
-        		E07={isa=PBXGroup;children=(B10);name=Extractors;path=Extractors;sourceTree="<group>";};
-        		E08={isa=PBXGroup;children=(B05);name=AdBlock;path=AdBlock;sourceTree="<group>";};
-        		E09={isa=PBXGroup;children=(B16,B17);name=Resources;path=Resources;sourceTree="<group>";};
-        		E10={isa=PBXGroup;children=(C01);name=Products;sourceTree="<group>";};
-        		F01={isa=PBXNativeTarget;buildConfigurationList=G01;buildPhases=(F02,D01,F03);buildRules=();dependencies=();name=VideoFlow;productName=VideoFlow;productReference=C01;productType="com.apple.product-type.application";};
-        		F00={isa=PBXProject;attributes={BuildIndependentTargetsInParallel=1;LastSwiftUpdateCheck=1500;LastUpgradeCheck=1500;TargetAttributes={F01={CreatedOnToolsVersion=15.0;};};};buildConfigurationList=G00;compatibilityVersion="Xcode 14.0";developmentRegion=en;hasScannedForEncodings=0;knownRegions=(en,Base);mainGroup=E01;productRefGroup=E10;projectDirPath="";projectRoot="";targets=(F01);};
-        		F03={isa=PBXResourcesBuildPhase;buildActionMask=2147483647;files=(A16);runOnlyForDeploymentPostprocessing=0;};
-        		F02={isa=PBXSourcesBuildPhase;buildActionMask=2147483647;files=(A01,A02,A03,A04,A05,A06,A07,A08,A09,A10,A11,A12,A13,A14,A15);runOnlyForDeploymentPostprocessing=0;};
-        		H01={isa=XCBuildConfiguration;buildSettings={ALWAYS_SEARCH_USER_PATHS=NO;CLANG_ENABLE_MODULES=YES;CLANG_ENABLE_OBJC_ARC=YES;CODE_SIGNING_ALLOWED=NO;CODE_SIGN_IDENTITY="";GCC_C_LANGUAGE_STANDARD=gnu17;SDKROOT=iphoneos;SWIFT_OPTIMIZATION_LEVEL="-Onone";SWIFT_VERSION=5.0;};name=Debug;};
-        		H02={isa=XCBuildConfiguration;buildSettings={ALWAYS_SEARCH_USER_PATHS=NO;CLANG_ENABLE_MODULES=YES;CLANG_ENABLE_OBJC_ARC=YES;CODE_SIGNING_ALLOWED=NO;CODE_SIGN_IDENTITY="";GCC_C_LANGUAGE_STANDARD=gnu17;SDKROOT=iphoneos;SWIFT_COMPILATION_MODE=wholemodule;SWIFT_OPTIMIZATION_LEVEL="-O";SWIFT_VERSION=5.0;};name=Release;};
-        		H03={isa=XCBuildConfiguration;buildSettings={ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon;ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME=AccentColor;CODE_SIGNING_ALLOWED=NO;CODE_SIGN_IDENTITY="";CODE_SIGN_STYLE=Manual;CURRENT_PROJECT_VERSION=7;GENERATE_INFOPLIST_FILE=NO;INFOPLIST_FILE=VideoFlow/Resources/Info.plist;IPHONEOS_DEPLOYMENT_TARGET=16.0;LD_RUNPATH_SEARCH_PATHS="$(inherited) @executable_path/Frameworks";MARKETING_VERSION=7.0;PRODUCT_BUNDLE_IDENTIFIER=com.videoflow.app;PRODUCT_NAME=VideoFlow;PROVISIONING_PROFILE_SPECIFIER="";SWIFT_EMIT_LOC_STRINGS=YES;SWIFT_VERSION=5.0;TARGETED_DEVICE_FAMILY="1,2";};name=Debug;};
-        		H04={isa=XCBuildConfiguration;buildSettings={ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon;ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME=AccentColor;CODE_SIGNING_ALLOWED=NO;CODE_SIGN_IDENTITY="";CODE_SIGN_STYLE=Manual;CURRENT_PROJECT_VERSION=7;GENERATE_INFOPLIST_FILE=NO;INFOPLIST_FILE=VideoFlow/Resources/Info.plist;IPHONEOS_DEPLOYMENT_TARGET=16.0;LD_RUNPATH_SEARCH_PATHS="$(inherited) @executable_path/Frameworks";MARKETING_VERSION=7.0;PRODUCT_BUNDLE_IDENTIFIER=com.videoflow.app;PRODUCT_NAME=VideoFlow;PROVISIONING_PROFILE_SPECIFIER="";SWIFT_EMIT_LOC_STRINGS=YES;SWIFT_VERSION=5.0;TARGETED_DEVICE_FAMILY="1,2";};name=Release;};
-        		G00={isa=XCConfigurationList;buildConfigurations=(H01,H02);defaultConfigurationIsVisible=0;defaultConfigurationName=Release;};
-        		G01={isa=XCConfigurationList;buildConfigurations=(H03,H04);defaultConfigurationIsVisible=0;defaultConfigurationName=Release;};
-        	};
-        	rootObject=F00;
-        }
-        PBXEOF
+        @"
+        import customtkinter as ctk
+        import vlc
+        import time
+        import threading
+        import os
 
-    - name: Fix Swift Indentation
+
+        class VideoPlayer(ctk.CTkToplevel):
+
+            def __init__(self, parent, video_path=None):
+                super().__init__(parent)
+                self.title("Video Player")
+                self.geometry("900x650")
+                self.minsize(700, 500)
+
+                self.instance = vlc.Instance('--no-xlib')
+                self.media_player = self.instance.media_player_new()
+                self.is_playing = False
+                self.is_paused = False
+                self.current_volume = 70
+                self.is_fullscreen = False
+                self.update_thread_running = True
+                self.playlist = []
+                self.current_index = -1
+
+                self._build_ui()
+                self._bind_keys()
+
+                if video_path:
+                    self.load_video(video_path)
+
+                self.update_thread = threading.Thread(target=self._update_slider_thread, daemon=True)
+                self.update_thread.start()
+                self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+            def _build_ui(self):
+                self.video_frame = ctk.CTkFrame(self, fg_color="black")
+                self.video_frame.pack(fill="both", expand=True, padx=5, pady=(5, 0))
+
+                self.video_canvas = ctk.CTkCanvas(self.video_frame, bg="black", highlightthickness=0)
+                self.video_canvas.pack(fill="both", expand=True)
+                self.video_canvas.bind("<Double-Button-1>", self._toggle_fullscreen)
+
+                self.info_frame = ctk.CTkFrame(self, height=30)
+                self.info_frame.pack(fill="x", padx=5, pady=(2, 0))
+
+                self.title_label = ctk.CTkLabel(self.info_frame, text="No video loaded", font=("Arial", 12), anchor="w")
+                self.title_label.pack(side="left", padx=10)
+
+                self.format_label = ctk.CTkLabel(self.info_frame, text="", font=("Arial", 11), text_color="gray")
+                self.format_label.pack(side="right", padx=10)
+
+                self.progress_frame = ctk.CTkFrame(self, height=40)
+                self.progress_frame.pack(fill="x", padx=5, pady=(2, 0))
+
+                self.time_current = ctk.CTkLabel(self.progress_frame, text="00:00", font=("Arial", 11), width=60)
+                self.time_current.pack(side="left", padx=5)
+
+                self.progress_slider = ctk.CTkSlider(self.progress_frame, from_=0, to=1000, command=self._seek, height=15, button_color="#1DB954", progress_color="#1DB954")
+                self.progress_slider.pack(side="left", fill="x", expand=True, padx=5)
+                self.progress_slider.set(0)
+
+                self.time_total = ctk.CTkLabel(self.progress_frame, text="00:00", font=("Arial", 11), width=60)
+                self.time_total.pack(side="right", padx=5)
+
+                self.controls_frame = ctk.CTkFrame(self, height=50)
+                self.controls_frame.pack(fill="x", padx=5, pady=5)
+
+                left_controls = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
+                left_controls.pack(side="left", padx=10)
+
+                self.btn_prev = ctk.CTkButton(left_controls, text="<<", width=40, command=self._previous, font=("Arial", 14))
+                self.btn_prev.pack(side="left", padx=2)
+
+                self.btn_backward = ctk.CTkButton(left_controls, text="-10s", width=45, command=lambda: self._skip(-10), font=("Arial", 12))
+                self.btn_backward.pack(side="left", padx=2)
+
+                self.btn_play = ctk.CTkButton(left_controls, text="Play", width=60, command=self._toggle_play, font=("Arial", 14, "bold"), fg_color="#1DB954", hover_color="#1ed760")
+                self.btn_play.pack(side="left", padx=5)
+
+                self.btn_stop = ctk.CTkButton(left_controls, text="Stop", width=45, command=self._stop, font=("Arial", 12))
+                self.btn_stop.pack(side="left", padx=2)
+
+                self.btn_forward = ctk.CTkButton(left_controls, text="+10s", width=45, command=lambda: self._skip(10), font=("Arial", 12))
+                self.btn_forward.pack(side="left", padx=2)
+
+                self.btn_next = ctk.CTkButton(left_controls, text=">>", width=40, command=self._next, font=("Arial", 14))
+                self.btn_next.pack(side="left", padx=2)
+
+                mid_controls = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
+                mid_controls.pack(side="left", padx=20)
+
+                ctk.CTkLabel(mid_controls, text="Speed:", font=("Arial", 11)).pack(side="left", padx=2)
+                self.speed_var = ctk.StringVar(value="1.0x")
+                self.speed_menu = ctk.CTkOptionMenu(mid_controls, values=["0.25x", "0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x"], variable=self.speed_var, command=self._change_speed, width=80)
+                self.speed_menu.pack(side="left", padx=2)
+
+                right_controls = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
+                right_controls.pack(side="right", padx=10)
+
+                self.btn_fullscreen = ctk.CTkButton(right_controls, text="[ ]", width=35, command=self._toggle_fullscreen, font=("Arial", 14))
+                self.btn_fullscreen.pack(side="right", padx=5)
+
+                self.volume_slider = ctk.CTkSlider(right_controls, from_=0, to=100, command=self._change_volume, width=120, height=15, button_color="#1DB954", progress_color="#1DB954")
+                self.volume_slider.set(70)
+                self.volume_slider.pack(side="right", padx=5)
+
+                self.btn_mute = ctk.CTkButton(right_controls, text="Vol", width=35, command=self._toggle_mute, font=("Arial", 12))
+                self.btn_mute.pack(side="right", padx=2)
+
+                self.volume_label = ctk.CTkLabel(right_controls, text="70%", font=("Arial", 11), width=40)
+                self.volume_label.pack(side="right", padx=2)
+
+            def _bind_keys(self):
+                self.bind("<space>", lambda e: self._toggle_play())
+                self.bind("<Left>", lambda e: self._skip(-5))
+                self.bind("<Right>", lambda e: self._skip(5))
+                self.bind("<Up>", lambda e: self._adjust_volume(5))
+                self.bind("<Down>", lambda e: self._adjust_volume(-5))
+                self.bind("<f>", lambda e: self._toggle_fullscreen())
+                self.bind("<F11>", lambda e: self._toggle_fullscreen())
+                self.bind("<Escape>", lambda e: self._exit_fullscreen())
+                self.bind("<m>", lambda e: self._toggle_mute())
+
+            def load_video(self, path):
+                if not os.path.exists(path):
+                    return
+                media = self.instance.media_new(path)
+                self.media_player.set_media(media)
+                self.after(100, self._set_window_id)
+                self.title_label.configure(text=os.path.basename(path))
+                ext = os.path.splitext(path)[1].upper()
+                size = os.path.getsize(path)
+                self.format_label.configure(text=f"{ext} | {self._format_size(size)}")
+                self.after(200, self._play)
+
+            def load_playlist(self, file_list):
+                self.playlist = [f for f in file_list if os.path.exists(f)]
+                if self.playlist:
+                    self.current_index = 0
+                    self.load_video(self.playlist[0])
+
+            def _set_window_id(self):
+                win_id = self.video_canvas.winfo_id()
+                if os.name == 'nt':
+                    self.media_player.set_hwnd(win_id)
+                else:
+                    self.media_player.set_xwindow(win_id)
+
+            def _play(self):
+                self.media_player.play()
+                self.is_playing = True
+                self.is_paused = False
+                self.btn_play.configure(text="Pause")
+                self.media_player.audio_set_volume(self.current_volume)
+
+            def _toggle_play(self):
+                if not self.is_playing:
+                    self._play()
+                elif self.is_paused:
+                    self.media_player.pause()
+                    self.is_paused = False
+                    self.btn_play.configure(text="Pause")
+                else:
+                    self.media_player.pause()
+                    self.is_paused = True
+                    self.btn_play.configure(text="Play")
+
+            def _stop(self):
+                self.media_player.stop()
+                self.is_playing = False
+                self.is_paused = False
+                self.btn_play.configure(text="Play")
+                self.progress_slider.set(0)
+                self.time_current.configure(text="00:00")
+
+            def _seek(self, value):
+                if self.is_playing:
+                    self.media_player.set_position(float(value) / 1000)
+
+            def _skip(self, seconds):
+                if self.is_playing:
+                    current = self.media_player.get_time()
+                    new_time = max(0, current + (seconds * 1000))
+                    self.media_player.set_time(int(new_time))
+
+            def _previous(self):
+                if self.playlist and self.current_index > 0:
+                    self.current_index -= 1
+                    self._stop()
+                    self.load_video(self.playlist[self.current_index])
+
+            def _next(self):
+                if self.playlist and self.current_index < len(self.playlist) - 1:
+                    self.current_index += 1
+                    self._stop()
+                    self.load_video(self.playlist[self.current_index])
+
+            def _change_volume(self, value):
+                self.current_volume = int(value)
+                self.media_player.audio_set_volume(self.current_volume)
+                self.volume_label.configure(text=f"{self.current_volume}%")
+
+            def _adjust_volume(self, delta):
+                new_vol = max(0, min(100, self.current_volume + delta))
+                self.volume_slider.set(new_vol)
+                self._change_volume(new_vol)
+
+            def _toggle_mute(self):
+                if self.current_volume > 0:
+                    self._saved_volume = self.current_volume
+                    self.volume_slider.set(0)
+                    self._change_volume(0)
+                else:
+                    vol = getattr(self, '_saved_volume', 70)
+                    self.volume_slider.set(vol)
+                    self._change_volume(vol)
+
+            def _change_speed(self, speed_str):
+                speed = float(speed_str.replace('x', ''))
+                self.media_player.set_rate(speed)
+
+            def _toggle_fullscreen(self, event=None):
+                self.is_fullscreen = not self.is_fullscreen
+                self.attributes("-fullscreen", self.is_fullscreen)
+
+            def _exit_fullscreen(self):
+                self.is_fullscreen = False
+                self.attributes("-fullscreen", False)
+
+            def _update_slider_thread(self):
+                while self.update_thread_running:
+                    try:
+                        if self.is_playing and not self.is_paused:
+                            pos = self.media_player.get_position()
+                            length = self.media_player.get_length()
+                            current = self.media_player.get_time()
+                            if pos >= 0:
+                                self.progress_slider.set(pos * 1000)
+                                self.time_current.configure(text=self._format_time(current))
+                                self.time_total.configure(text=self._format_time(length))
+                            state = self.media_player.get_state()
+                            if state == vlc.State.Ended:
+                                self.after(0, self._next)
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+
+            def _on_close(self):
+                self.update_thread_running = False
+                self.media_player.stop()
+                self.media_player.release()
+                self.instance.release()
+                self.destroy()
+
+            @staticmethod
+            def _format_time(ms):
+                if not ms or ms < 0:
+                    return "00:00"
+                seconds = ms // 1000
+                hours = seconds // 3600
+                minutes = (seconds % 3600) // 60
+                secs = seconds % 60
+                if hours > 0:
+                    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+                return f"{minutes:02d}:{secs:02d}"
+
+            @staticmethod
+            def _format_size(size_bytes):
+                for unit in ['B', 'KB', 'MB', 'GB']:
+                    if size_bytes < 1024:
+                        return f"{size_bytes:.1f} {unit}"
+                    size_bytes /= 1024
+                return f"{size_bytes:.1f} TB"
+        "@ | Out-File -FilePath player.py -Encoding utf8
+
+    # ==========================================
+    # ملف history.py - سجل التحميلات
+    # ==========================================
+    - name: Create history.py
+      shell: pwsh
       run: |
-        for f in $(find VideoFlow -name "*.swift"); do
-          sed -i '' 's/^        //' "$f" 2>/dev/null || true
-        done
+        @"
+        import customtkinter as ctk
+        from CTkMessagebox import CTkMessagebox
+        import os
+        import json
 
-    - name: Verify Files
-      run: find VideoFlow -type f | sort
 
-    - name: Build App
+        class HistoryWindow(ctk.CTkToplevel):
+
+            def __init__(self, parent, history_data, play_callback=None, delete_callback=None, clear_callback=None):
+                super().__init__(parent)
+                self.title("Download History")
+                self.geometry("800x500")
+                self.minsize(600, 400)
+                self.history_data = history_data
+                self.play_callback = play_callback
+                self.delete_callback = delete_callback
+                self.clear_callback = clear_callback
+                self._build_ui()
+
+            def _build_ui(self):
+                header = ctk.CTkFrame(self, height=50)
+                header.pack(fill="x", padx=10, pady=5)
+
+                ctk.CTkLabel(header, text=f"Download History ({len(self.history_data)} items)", font=("Arial", 18, "bold")).pack(side="left", padx=10)
+
+                ctk.CTkButton(header, text="Clear All", command=self._clear_all, fg_color="red", hover_color="darkred", width=100).pack(side="right", padx=10)
+
+                search_frame = ctk.CTkFrame(self, height=40)
+                search_frame.pack(fill="x", padx=10, pady=2)
+
+                self.search_var = ctk.StringVar()
+                self.search_var.trace_add("write", self._filter_history)
+
+                ctk.CTkEntry(search_frame, placeholder_text="Search history...", textvariable=self.search_var, font=("Arial", 13), height=35).pack(fill="x", padx=10, pady=5)
+
+                self.list_frame = ctk.CTkScrollableFrame(self)
+                self.list_frame.pack(fill="both", expand=True, padx=10, pady=5)
+                self._populate_list(self.history_data)
+
+            def _populate_list(self, data):
+                for widget in self.list_frame.winfo_children():
+                    widget.destroy()
+                if not data:
+                    ctk.CTkLabel(self.list_frame, text="No downloads in history", font=("Arial", 16), text_color="gray").pack(pady=50)
+                    return
+                for i, item in enumerate(data):
+                    self._create_history_item(i, item)
+
+            def _create_history_item(self, index, item):
+                item_frame = ctk.CTkFrame(self.list_frame, height=70)
+                item_frame.pack(fill="x", pady=2, padx=5)
+
+                info_frame = ctk.CTkFrame(item_frame, fg_color="transparent")
+                info_frame.pack(side="left", fill="both", expand=True, padx=10, pady=5)
+
+                title = item.get('title', 'Unknown')
+                ctk.CTkLabel(info_frame, text=title[:60], font=("Arial", 13, "bold"), anchor="w").pack(fill="x")
+
+                details = f"{item.get('download_date', 'Unknown')}  |  {self._format_size(item.get('filesize', 0))}  |  {item.get('extractor', 'Unknown')}"
+                ctk.CTkLabel(info_frame, text=details, font=("Arial", 11), text_color="gray", anchor="w").pack(fill="x")
+
+                actions_frame = ctk.CTkFrame(item_frame, fg_color="transparent")
+                actions_frame.pack(side="right", padx=10, pady=5)
+
+                filename = item.get('filename', '')
+                if os.path.exists(filename):
+                    ctk.CTkButton(actions_frame, text="Play", width=45, command=lambda f=filename: self._play_file(f), fg_color="#1DB954", hover_color="#1ed760").pack(side="left", padx=2)
+                    ctk.CTkButton(actions_frame, text="Folder", width=50, command=lambda f=filename: self._open_folder(f)).pack(side="left", padx=2)
+
+                ctk.CTkButton(actions_frame, text="Delete", width=50, command=lambda idx=index: self._delete_item(idx), fg_color="red", hover_color="darkred").pack(side="left", padx=2)
+
+            def _play_file(self, filename):
+                if self.play_callback:
+                    self.play_callback(filename)
+
+            def _open_folder(self, filename):
+                folder = os.path.dirname(filename)
+                if os.path.exists(folder):
+                    if os.name == 'nt':
+                        os.startfile(folder)
+                    else:
+                        os.system(f'xdg-open "{folder}"')
+
+            def _delete_item(self, index):
+                if self.delete_callback:
+                    self.delete_callback(index)
+                self.history_data.pop(index)
+                self._populate_list(self.history_data)
+
+            def _clear_all(self):
+                msg = CTkMessagebox(title="Confirm", message="Are you sure you want to clear all history?", option_1="Yes", option_2="No", icon="warning")
+                if msg.get() == "Yes":
+                    if self.clear_callback:
+                        self.clear_callback()
+                    self.history_data.clear()
+                    self._populate_list(self.history_data)
+
+            def _filter_history(self, *args):
+                query = self.search_var.get().lower()
+                if query:
+                    filtered = [item for item in self.history_data if query in item.get('title', '').lower() or query in item.get('url', '').lower()]
+                    self._populate_list(filtered)
+                else:
+                    self._populate_list(self.history_data)
+
+            @staticmethod
+            def _format_size(size_bytes):
+                if not size_bytes:
+                    return "Unknown"
+                for unit in ['B', 'KB', 'MB', 'GB']:
+                    if size_bytes < 1024:
+                        return f"{size_bytes:.1f} {unit}"
+                    size_bytes /= 1024
+                return f"{size_bytes:.1f} TB"
+        "@ | Out-File -FilePath history.py -Encoding utf8
+
+    # ==========================================
+    # ملف app.py - الواجهة الرئيسية
+    # ==========================================
+    - name: Create app.py
+      shell: pwsh
       run: |
-        xcodebuild \
-          -project VideoFlow.xcodeproj \
-          -scheme VideoFlow \
-          -configuration Release \
-          -sdk iphoneos \
-          -arch arm64 \
-          CODE_SIGNING_ALLOWED=NO \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO \
-          ONLY_ACTIVE_ARCH=NO \
-          BUILD_DIR=$PWD/build \
-          clean build \
-          2>&1 | tee build.log | grep -E "(error:|warning:|Build succeeded|FAILED|Compiling)" || true
+        @"
+        import customtkinter as ctk
+        from CTkMessagebox import CTkMessagebox
+        from tkinter import filedialog
+        import threading
+        import os
+        import sys
+        import urllib.request
+        from PIL import Image
+        import io
 
-    - name: Check Build
+        from downloader import VideoDownloader
+        from player import VideoPlayer
+        from history import HistoryWindow
+
+
+        class MainApp(ctk.CTk):
+
+            def __init__(self):
+                super().__init__()
+                self.title("Video Downloader Pro")
+                self.geometry("850x700")
+                self.minsize(750, 600)
+                ctk.set_appearance_mode("dark")
+                ctk.set_default_color_theme("green")
+
+                self.downloader = VideoDownloader()
+                self.video_info = None
+                self.selected_format = None
+                self.save_path = os.path.join(os.path.expanduser("~"), "Downloads")
+                self.player_window = None
+                self.formats_map = {}
+                self._build_ui()
+
+            def _build_ui(self):
+                header_frame = ctk.CTkFrame(self, height=70, corner_radius=10)
+                header_frame.pack(fill="x", padx=15, pady=(10, 5))
+                header_frame.pack_propagate(False)
+
+                ctk.CTkLabel(header_frame, text="Video Downloader Pro", font=("Arial", 24, "bold"), text_color="#1DB954").pack(side="left", padx=20)
+
+                header_buttons = ctk.CTkFrame(header_frame, fg_color="transparent")
+                header_buttons.pack(side="right", padx=10)
+
+                ctk.CTkButton(header_buttons, text="History", command=self._open_history, width=80, font=("Arial", 13)).pack(side="left", padx=5)
+
+                self.theme_btn = ctk.CTkButton(header_buttons, text="Theme", command=self._toggle_theme, width=50, font=("Arial", 12))
+                self.theme_btn.pack(side="left", padx=5)
+
+                url_frame = ctk.CTkFrame(self, corner_radius=10)
+                url_frame.pack(fill="x", padx=15, pady=5)
+
+                ctk.CTkLabel(url_frame, text="Enter video URL from any website:", font=("Arial", 14, "bold")).pack(anchor="w", padx=15, pady=(10, 5))
+
+                input_row = ctk.CTkFrame(url_frame, fg_color="transparent")
+                input_row.pack(fill="x", padx=15, pady=(0, 10))
+
+                self.url_entry = ctk.CTkEntry(input_row, placeholder_text="Paste URL here... (YouTube, Facebook, TikTok, Instagram, Twitter...)", font=("Arial", 13), height=40)
+                self.url_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+                self.btn_paste = ctk.CTkButton(input_row, text="Paste", command=self._paste_url, width=60, font=("Arial", 12))
+                self.btn_paste.pack(side="left", padx=(0, 5))
+
+                self.btn_analyze = ctk.CTkButton(input_row, text="Analyze URL", command=self._analyze_url, width=120, font=("Arial", 13, "bold"), fg_color="#1DB954", hover_color="#1ed760", height=40)
+                self.btn_analyze.pack(side="right")
+
+                self.status_label = ctk.CTkLabel(self, text="", font=("Arial", 12), text_color="gray")
+                self.status_label.pack(anchor="w", padx=20)
+
+                self.info_frame = ctk.CTkFrame(self, corner_radius=10)
+                self.info_frame.pack(fill="x", padx=15, pady=5)
+
+                self.info_content = ctk.CTkFrame(self.info_frame, fg_color="transparent")
+                self.info_content.pack(fill="x", padx=15, pady=10)
+
+                self.thumbnail_label = ctk.CTkLabel(self.info_content, text="No\nThumbnail", width=160, height=90, corner_radius=8, fg_color="gray25")
+                self.thumbnail_label.pack(side="left", padx=(0, 15))
+
+                details_frame = ctk.CTkFrame(self.info_content, fg_color="transparent")
+                details_frame.pack(side="left", fill="both", expand=True)
+
+                self.video_title_label = ctk.CTkLabel(details_frame, text="Video Title: ---", font=("Arial", 14, "bold"), anchor="w", wraplength=400)
+                self.video_title_label.pack(fill="x", pady=2)
+
+                self.video_details_label = ctk.CTkLabel(details_frame, text="Channel: --- | Duration: --- | Views: ---", font=("Arial", 11), text_color="gray", anchor="w")
+                self.video_details_label.pack(fill="x", pady=2)
+
+                self.video_site_label = ctk.CTkLabel(details_frame, text="Website: ---", font=("Arial", 11), text_color="gray", anchor="w")
+                self.video_site_label.pack(fill="x", pady=2)
+
+                quality_frame = ctk.CTkFrame(self, corner_radius=10)
+                quality_frame.pack(fill="x", padx=15, pady=5)
+
+                ctk.CTkLabel(quality_frame, text="Select Quality:", font=("Arial", 14, "bold")).pack(anchor="w", padx=15, pady=(10, 5))
+
+                self.quality_var = ctk.StringVar(value="Analyze URL first")
+                self.quality_menu = ctk.CTkOptionMenu(quality_frame, variable=self.quality_var, values=["Analyze URL first"], command=self._on_quality_selected, font=("Arial", 13), height=35, width=400)
+                self.quality_menu.pack(padx=15, pady=(0, 5), anchor="w")
+
+                save_row = ctk.CTkFrame(quality_frame, fg_color="transparent")
+                save_row.pack(fill="x", padx=15, pady=(0, 10))
+
+                ctk.CTkLabel(save_row, text="Save to:", font=("Arial", 12)).pack(side="left")
+                self.path_label = ctk.CTkLabel(save_row, text=self.save_path, font=("Arial", 11), text_color="gray")
+                self.path_label.pack(side="left", padx=10)
+                ctk.CTkButton(save_row, text="Change", command=self._change_save_path, width=60, font=("Arial", 11)).pack(side="right")
+
+                self.btn_download = ctk.CTkButton(self, text="Start Download", command=self._start_download, height=45, font=("Arial", 16, "bold"), fg_color="#1DB954", hover_color="#1ed760", state="disabled")
+                self.btn_download.pack(fill="x", padx=15, pady=5)
+
+                self.btn_cancel = ctk.CTkButton(self, text="Cancel Download", command=self._cancel_download, height=35, font=("Arial", 13), fg_color="red", hover_color="darkred")
+
+                progress_frame = ctk.CTkFrame(self, corner_radius=10)
+                progress_frame.pack(fill="x", padx=15, pady=5)
+
+                self.progress_bar = ctk.CTkProgressBar(progress_frame, height=20, progress_color="#1DB954")
+                self.progress_bar.pack(fill="x", padx=15, pady=(10, 5))
+                self.progress_bar.set(0)
+
+                self.progress_label = ctk.CTkLabel(progress_frame, text="Waiting to start download...", font=("Arial", 12))
+                self.progress_label.pack(padx=15, pady=(0, 5))
+
+                self.progress_details = ctk.CTkLabel(progress_frame, text="", font=("Arial", 11), text_color="gray")
+                self.progress_details.pack(padx=15, pady=(0, 10))
+
+            def _paste_url(self):
+                try:
+                    url = self.clipboard_get()
+                    self.url_entry.delete(0, "end")
+                    self.url_entry.insert(0, url)
+                except:
+                    pass
+
+            def _analyze_url(self):
+                url = self.url_entry.get().strip()
+                if not url:
+                    CTkMessagebox(title="Error", message="Please enter a video URL first!", icon="cancel")
+                    return
+                self.btn_analyze.configure(state="disabled", text="Analyzing...")
+                self.status_label.configure(text="Analyzing URL...", text_color="yellow")
+                def _analyze_thread():
+                    result = self.downloader.get_video_info(url)
+                    self.after(0, lambda: self._on_analysis_complete(result))
+                threading.Thread(target=_analyze_thread, daemon=True).start()
+
+            def _on_analysis_complete(self, result):
+                self.btn_analyze.configure(state="normal", text="Analyze URL")
+                if result['success']:
+                    self.video_info = result['data']
+                    info = self.video_info
+                    self.video_title_label.configure(text=info['title'][:80])
+                    views = f"{info['view_count']:,}" if info['view_count'] else '---'
+                    self.video_details_label.configure(text=f"Channel: {info['uploader']}  |  Duration: {info['duration_str']}  |  Views: {views}")
+                    self.video_site_label.configure(text=f"Website: {info['extractor']}")
+                    self._load_thumbnail(info.get('thumbnail', ''))
+                    quality_options = []
+                    self.formats_map = {}
+                    for fmt in info['formats']:
+                        size_info = f" ({fmt['filesize_str']})" if fmt['filesize_str'] and fmt['filesize_str'] != 'Unknown' else ''
+                        label = f"{fmt['resolution']}{size_info}"
+                        quality_options.append(label)
+                        self.formats_map[label] = fmt['format_id']
+                    self.quality_menu.configure(values=quality_options)
+                    self.quality_var.set(quality_options[0])
+                    self.selected_format = self.formats_map[quality_options[0]]
+                    self.btn_download.configure(state="normal")
+                    self.status_label.configure(text=f"Found {len(quality_options)} quality options!", text_color="#1DB954")
+                else:
+                    self.status_label.configure(text=f"Analysis failed: {result['error'][:100]}", text_color="red")
+                    CTkMessagebox(title="Error", message=f"Could not analyze URL:\n{result['error'][:200]}", icon="cancel")
+
+            def _load_thumbnail(self, url):
+                def _load():
+                    try:
+                        if url:
+                            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                            response = urllib.request.urlopen(req, timeout=5)
+                            image_data = response.read()
+                            image = Image.open(io.BytesIO(image_data))
+                            image = image.resize((160, 90), Image.LANCZOS)
+                            photo = ctk.CTkImage(light_image=image, dark_image=image, size=(160, 90))
+                            self.after(0, lambda: self.thumbnail_label.configure(image=photo, text=""))
+                    except:
+                        pass
+                threading.Thread(target=_load, daemon=True).start()
+
+            def _on_quality_selected(self, choice):
+                if choice in self.formats_map:
+                    self.selected_format = self.formats_map[choice]
+
+            def _change_save_path(self):
+                path = filedialog.askdirectory(initialdir=self.save_path)
+                if path:
+                    self.save_path = path
+                    self.path_label.configure(text=path)
+
+            def _start_download(self):
+                url = self.url_entry.get().strip()
+                if not url or not self.selected_format:
+                    return
+                self.btn_download.configure(state="disabled")
+                self.btn_analyze.configure(state="disabled")
+                self.btn_cancel.pack(fill="x", padx=15, pady=2)
+                self.progress_bar.set(0)
+                self.progress_label.configure(text="Starting download...")
+                self.downloader.download(url=url, format_id=self.selected_format, save_path=self.save_path, progress_callback=self._on_progress, complete_callback=self._on_download_complete, error_callback=self._on_download_error)
+
+            def _on_progress(self, data):
+                def _update():
+                    progress = data['progress'] / 100
+                    self.progress_bar.set(progress)
+                    self.progress_label.configure(text=f"Downloading... {data['progress']:.1f}%")
+                    self.progress_details.configure(text=f"{data['downloaded']} / {data['total']}  |  Speed: {data['speed']}  |  ETA: {data['eta']}")
+                self.after(0, _update)
+
+            def _on_download_complete(self, filename):
+                def _update():
+                    self.progress_bar.set(1)
+                    self.progress_label.configure(text="Download Complete!")
+                    self.progress_details.configure(text=filename)
+                    self.btn_download.configure(state="normal")
+                    self.btn_analyze.configure(state="normal")
+                    self.btn_cancel.pack_forget()
+                    msg = CTkMessagebox(title="Download Complete!", message=f"Video downloaded successfully!\n\n{os.path.basename(filename)}\n\nDo you want to play it now?", option_1="Play", option_2="Open Folder", option_3="Close", icon="check")
+                    response = msg.get()
+                    if response == "Play":
+                        self._play_video(filename)
+                    elif response == "Open Folder":
+                        folder = os.path.dirname(filename)
+                        if os.name == 'nt':
+                            os.startfile(folder)
+                        else:
+                            os.system(f'xdg-open "{folder}"')
+                self.after(0, _update)
+
+            def _on_download_error(self, error):
+                def _update():
+                    self.progress_label.configure(text="Download Failed!")
+                    self.progress_details.configure(text=error[:150])
+                    self.btn_download.configure(state="normal")
+                    self.btn_analyze.configure(state="normal")
+                    self.btn_cancel.pack_forget()
+                    CTkMessagebox(title="Error", message=f"Download error:\n\n{error[:300]}", icon="cancel")
+                self.after(0, _update)
+
+            def _cancel_download(self):
+                self.downloader.cancel_download()
+                self.btn_cancel.pack_forget()
+                self.btn_download.configure(state="normal")
+                self.btn_analyze.configure(state="normal")
+                self.progress_label.configure(text="Download Cancelled")
+
+            def _play_video(self, filepath):
+                try:
+                    if self.player_window is not None and self.player_window.winfo_exists():
+                        self.player_window.destroy()
+                    self.player_window = VideoPlayer(self, filepath)
+                    self.player_window.focus()
+                except Exception as e:
+                    CTkMessagebox(title="Player Error", message=f"Could not play video:\n{str(e)}\n\nMake sure VLC Media Player is installed.", icon="cancel")
+
+            def _open_history(self):
+                history = self.downloader.get_history()
+                HistoryWindow(self, history, play_callback=self._play_video, delete_callback=self.downloader.delete_history_item, clear_callback=self.downloader.clear_history)
+
+            def _toggle_theme(self):
+                current = ctk.get_appearance_mode()
+                if current == "Dark":
+                    ctk.set_appearance_mode("light")
+                else:
+                    ctk.set_appearance_mode("dark")
+
+
+        if __name__ == "__main__":
+            app = MainApp()
+            app.mainloop()
+        "@ | Out-File -FilePath app.py -Encoding utf8
+
+    # ==========================================
+    # تثبيت المكتبات والبناء
+    # ==========================================
+    - name: Install Python dependencies
       run: |
-        if grep -q "BUILD SUCCEEDED" build.log; then
-          echo "BUILD SUCCEEDED"
-        else
-          echo "BUILD FAILED"
-          tail -100 build.log
-          exit 1
-        fi
+        python -m pip install --upgrade pip
+        pip install yt-dlp customtkinter CTkMessagebox pillow python-vlc pyinstaller
 
-    - name: Package IPA
+    - name: Install VLC
+      run: choco install vlc -y
+
+    - name: Verify all files exist
+      shell: pwsh
       run: |
-        APP=$(find build -name "VideoFlow.app" -type d | head -1)
-        mkdir -p Payload
-        cp -r "$APP" Payload/VideoFlow.app
-        zip -r VideoFlow-v7-IDM.ipa Payload/
-        rm -rf Payload/
-        ls -lh VideoFlow-v7-IDM.ipa
+        Write-Host "=== Files Created ==="
+        Get-ChildItem -Name *.py
+        Get-ChildItem -Name requirements.txt
+        Write-Host "=== All files ready ==="
 
-    - name: Upload IPA
+    - name: Build EXE with PyInstaller
+      shell: pwsh
+      run: |
+        pyinstaller --onefile --windowed --name "VideoDownloaderPro" --add-data "downloader.py;." --add-data "player.py;." --add-data "history.py;." --hidden-import=yt_dlp --hidden-import=customtkinter --hidden-import=CTkMessagebox --hidden-import=PIL --hidden-import=vlc --collect-all customtkinter --collect-all CTkMessagebox app.py
+
+    - name: Upload EXE
       uses: actions/upload-artifact@v4
       with:
-        name: VideoFlow-v7-IDM
-        path: VideoFlow-v7-IDM.ipa
+        name: VideoDownloaderPro-Windows
+        path: dist/VideoDownloaderPro.exe
         retention-days: 30
-
-    - name: Upload Log on Failure
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-log
-        path: build.log
-        retention-days: 7
