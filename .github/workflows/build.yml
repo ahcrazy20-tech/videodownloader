@@ -1,252 +1,1731 @@
-# =====================================
-# 📱 فيديو برو - iOS IPA Builder
-# =====================================
-# بناء تطبيق iOS بدون توقيع لـ TrollStore
-# يعمل على iPhone 11 Pro Max - iOS 14.0-16.6.1
-# =====================================
-
-name: 🍎 Build iOS IPA for TrollStore
+name: Build VideoFlow IPA
 
 on:
-  # يعمل عند Push لـ main
   push:
-    branches: [main]
-  
-  # يعمل يدوياً من GitHub
+    branches: [ main ]
   workflow_dispatch:
-    inputs:
-      build_type:
-        description: 'نوع البناء'
-        required: true
-        default: 'release'
-        type: choice
-        options:
-          - debug
-          - release
-
-# صلاحيات الكتابة
-permissions:
-  contents: write
 
 jobs:
-  # =====================================
-  # 🔨 بناء التطبيق
-  # =====================================
   build:
-    name: 📦 Build iOS App
     runs-on: macos-14
-    
+    timeout-minutes: 120
+
     steps:
-      # =====================================
-      # 1️⃣ تحضير البيئة
-      # =====================================
-      - name: 📥 Checkout Repository
-        uses: actions/checkout@v4
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: 🔧 Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
+    - name: Select Xcode 15
+      run: sudo xcode-select -s /Applications/Xcode_15.2.app
 
-      - name: 📱 Setup Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: '15.2'
+    - name: Create Full Project Structure
+      run: |
+        # ============================================================
+        # CREATE ALL DIRECTORIES
+        # ============================================================
+        mkdir -p VideoFlow/App
+        mkdir -p VideoFlow/Views
+        mkdir -p VideoFlow/Models
+        mkdir -p VideoFlow/Services
+        mkdir -p VideoFlow/Resources/Assets.xcassets/AppIcon.appiconset
+        mkdir -p VideoFlow/Resources/Assets.xcassets/AccentColor.colorset
+        mkdir -p VideoFlow.xcodeproj
 
-      # =====================================
-      # 2️⃣ تثبيت المتطلبات
-      # =====================================
-      - name: 📦 Install Dependencies
-        run: |
-          echo "🔄 Installing npm packages..."
-          npm ci
-          
-          echo "🔄 Installing Capacitor CLI globally..."
-          npm install -g @capacitor/cli
+        # ============================================================
+        # FILE 1: VideoFlowApp.swift
+        # ============================================================
+        cat > VideoFlow/App/VideoFlowApp.swift << 'SWIFTEOF'
+        import SwiftUI
 
-      # =====================================
-      # 3️⃣ بناء تطبيق الويب
-      # =====================================
-      - name: 🏗️ Build Web App
-        run: |
-          echo "🔨 Building React app..."
-          npm run build
-          
-          echo "✅ Web build complete!"
-          ls -la dist/
+        @main
+        struct VideoFlowApp: App {
+            @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+            @StateObject private var downloadManager = DownloadManager.shared
+            @StateObject private var playerManager = PlayerManager.shared
 
-      # =====================================
-      # 4️⃣ تحضير iOS Project
-      # =====================================
-      - name: 📱 Prepare iOS Project
-        run: |
-          echo "🔄 Syncing Capacitor..."
-          
-          # نسخ الملفات للـ public folder
-          mkdir -p ios/App/App/public
-          cp -r dist/* ios/App/App/public/
-          
-          echo "✅ iOS project prepared!"
-          ls -la ios/App/App/public/
+            var body: some Scene {
+                WindowGroup {
+                    ContentView()
+                        .environmentObject(downloadManager)
+                        .environmentObject(playerManager)
+                        .preferredColorScheme(.dark)
+                }
+            }
+        }
+        SWIFTEOF
 
-      # =====================================
-      # 5️⃣ بناء IPA بدون توقيع
-      # =====================================
-      - name: 🔨 Build Unsigned IPA
-        run: |
-          cd ios/App
-          
-          echo "🔧 Cleaning previous builds..."
-          rm -rf build
-          
-          echo "🔨 Building iOS app (unsigned for TrollStore)..."
-          
-          # بناء بدون توقيع - مطلوب لـ TrollStore
-          xcodebuild \
-            -project App.xcodeproj \
-            -scheme App \
-            -configuration Release \
-            -sdk iphoneos \
-            -arch arm64 \
-            -derivedDataPath build \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            DEVELOPMENT_TEAM="" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
-            | tee build.log || true
-          
-          echo "📋 Build log:"
-          tail -100 build.log || true
-          
-          echo "✅ Build completed!"
-          find build -name "*.app" -type d 2>/dev/null || echo "Looking for app..."
+        # ============================================================
+        # FILE 2: AppDelegate.swift
+        # ============================================================
+        cat > VideoFlow/App/AppDelegate.swift << 'SWIFTEOF'
+        import UIKit
+        import AVFoundation
+        import UserNotifications
 
-      # =====================================
-      # 6️⃣ إنشاء ملف IPA
-      # =====================================
-      - name: 📦 Create IPA Package
-        run: |
-          cd ios/App
-          
-          echo "📦 Creating IPA..."
-          
-          # البحث عن ملف .app
-          APP_PATH=$(find build -name "*.app" -type d | head -1)
-          
-          if [ -z "$APP_PATH" ]; then
-            echo "❌ No .app found!"
-            
-            # محاولة بناء بديلة
-            echo "🔄 Trying alternative build..."
-            
-            xcodebuild archive \
-              -project App.xcodeproj \
-              -scheme App \
-              -configuration Release \
-              -archivePath build/App.xcarchive \
-              CODE_SIGN_IDENTITY="" \
-              CODE_SIGNING_REQUIRED=NO \
-              CODE_SIGNING_ALLOWED=NO \
-              || true
-            
-            APP_PATH=$(find build -name "*.app" -type d | head -1)
-          fi
-          
-          if [ -n "$APP_PATH" ]; then
-            echo "✅ Found app at: $APP_PATH"
-            
-            # إنشاء مجلد Payload
-            mkdir -p Payload
-            cp -r "$APP_PATH" Payload/
-            
-            # ضغط كـ IPA
-            zip -r VideoPro-TrollStore.ipa Payload/
-            
-            echo "✅ IPA created successfully!"
-            ls -la *.ipa
-          else
-            echo "⚠️ App not found, creating placeholder..."
-            
-            # إنشاء IPA بسيط مع تطبيق الويب
-            mkdir -p Payload/App.app
-            cp -r App/public/* Payload/App.app/ 2>/dev/null || true
-            cp App/Info.plist Payload/App.app/ 2>/dev/null || true
-            
-            zip -r VideoPro-TrollStore.ipa Payload/
-            echo "📦 Created web-based IPA"
-          fi
+        class AppDelegate: NSObject, UIApplicationDelegate {
+            func application(
+                _ application: UIApplication,
+                didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+            ) -> Bool {
+                setupAudioSession()
+                requestNotificationPermission()
+                return true
+            }
 
-      # =====================================
-      # 7️⃣ رفع IPA كـ Artifact
-      # =====================================
-      - name: 📤 Upload IPA Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: VideoPro-iOS-${{ github.run_number }}
-          path: |
-            ios/App/*.ipa
-            ios/App/Payload/
-          retention-days: 30
-          if-no-files-found: warn
+            private func setupAudioSession() {
+                do {
+                    try AVAudioSession.sharedInstance().setCategory(
+                        .playback,
+                        mode: .moviePlayback,
+                        options: [.allowAirPlay, .allowBluetooth]
+                    )
+                    try AVAudioSession.sharedInstance().setActive(true)
+                } catch {
+                    print("Audio session error: \(error)")
+                }
+            }
 
-      # =====================================
-      # 8️⃣ إنشاء Release
-      # =====================================
-      - name: 🏷️ Create GitHub Release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: "فيديو برو v1.0.${{ github.run_number }}"
-          body: |
-            ## 📱 فيديو برو - iOS App
-            
-            ### 📥 تعليمات التثبيت عبر TrollStore:
-            
-            1. حمّل ملف `VideoPro-TrollStore.ipa`
-            2. افتح TrollStore على جهازك
-            3. اضغط على `+` ثم اختر الملف
-            4. سيتم تثبيت التطبيق!
-            
-            ### ✨ المميزات:
-            - 🌐 متصفح مدمج
-            - 🔍 اكتشاف الفيديوهات تلقائياً
-            - 📥 تحميل بجودات متعددة
-            - 🎬 مشغل فيديو متطور
-            
-            ### 📋 متطلبات:
-            - iPhone/iPad
-            - iOS 14.0 - 16.6.1
-            - TrollStore مثبت
-            
-            ---
-            Built with ❤️ using GitHub Actions
-          files: |
-            ios/App/*.ipa
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            private func requestNotificationPermission() {
+                UNUserNotificationCenter.current().requestAuthorization(
+                    options: [.alert, .sound, .badge]
+                ) { _, _ in }
+            }
 
-  # =====================================
-  # 📊 إشعار النتيجة
-  # =====================================
-  notify:
-    name: 📬 Notify Result
-    needs: build
-    runs-on: ubuntu-latest
-    if: always()
-    
-    steps:
-      - name: 📊 Build Status
-        run: |
-          if [ "${{ needs.build.result }}" == "success" ]; then
-            echo "✅ Build successful!"
-            echo "📱 IPA is ready for TrollStore!"
-          else
-            echo "❌ Build failed!"
-            echo "Check the build logs for details."
-          fi
+            func application(
+                _ application: UIApplication,
+                handleEventsForBackgroundURLSession identifier: String,
+                completionHandler: @escaping () -> Void
+            ) {
+                DownloadManager.shared.backgroundCompletionHandler = completionHandler
+            }
+        }
+        SWIFTEOF
+
+        # ============================================================
+        # FILE 3: VideoItem.swift
+        # ============================================================
+        cat > VideoFlow/Models/VideoItem.swift << 'SWIFTEOF'
+        import SwiftUI
+
+        enum VideoQuality: String, CaseIterable, Hashable {
+            case p2160 = "4K"
+            case p1080 = "1080p"
+            case p720  = "720p"
+            case p480  = "480p"
+            case p360  = "360p"
+            case p240  = "240p"
+            case audio = "Audio"
+
+            var displayName: String {
+                switch self {
+                case .p2160: return "4K Ultra HD"
+                case .p1080: return "Full HD 1080p"
+                case .p720:  return "HD 720p"
+                case .p480:  return "SD 480p"
+                case .p360:  return "Low 360p"
+                case .p240:  return "Min 240p"
+                case .audio: return "Audio Only"
+                }
+            }
+
+            var description: String {
+                switch self {
+                case .p2160: return "2160p • Best Quality • Large File"
+                case .p1080: return "1080p • High Quality"
+                case .p720:  return "720p • Good Quality"
+                case .p480:  return "480p • Medium Quality"
+                case .p360:  return "360p • Small File"
+                case .p240:  return "240p • Smallest File"
+                case .audio: return "MP3 • Audio Only"
+                }
+            }
+
+            var color: Color {
+                switch self {
+                case .p2160: return .purple
+                case .p1080: return .red
+                case .p720:  return .orange
+                case .p480:  return .green
+                case .p360:  return .blue
+                case .p240:  return .gray
+                case .audio: return .pink
+                }
+            }
+        }
+
+        enum VideoSourceType: String {
+            case direct  = "Direct MP4"
+            case hls     = "HLS Stream"
+            case dash    = "DASH Stream"
+        }
+
+        struct VideoItem: Identifiable, Equatable, Hashable {
+            let id: String
+            var title: String
+            let url: String
+            var thumbnailURL: String?
+            var duration: String?
+            var estimatedSize: String?
+            var availableQualities: [VideoQuality]
+            var sourceType: VideoSourceType
+
+            func hash(into hasher: inout Hasher) { hasher.combine(id) }
+            static func == (lhs: VideoItem, rhs: VideoItem) -> Bool { lhs.id == rhs.id }
+        }
+        SWIFTEOF
+
+        # ============================================================
+        # FILE 4: DownloadTask.swift
+        # ============================================================
+        cat > VideoFlow/Models/DownloadTask.swift << 'SWIFTEOF'
+        import Foundation
+
+        enum DownloadStatus: Equatable {
+            case waiting
+            case downloading(progress: Double)
+            case paused
+            case completed
+            case failed(error: String)
+
+            var displayText: String {
+                switch self {
+                case .waiting:              return "Waiting..."
+                case .downloading(let p):  return "\(Int(p * 100))%"
+                case .paused:              return "Paused"
+                case .completed:           return "Completed"
+                case .failed(let e):       return "Failed: \(e)"
+                }
+            }
+        }
+
+        class DownloadTask: ObservableObject, Identifiable {
+            let id: String
+            let video: VideoItem
+            let quality: VideoQuality
+
+            @Published var status: DownloadStatus = .waiting
+            @Published var progress: Double = 0
+            @Published var downloadedBytes: Int64 = 0
+            @Published var totalBytes: Int64 = 0
+            @Published var speed: String = ""
+            @Published var savedURL: URL?
+
+            var urlSessionTask: URLSessionDownloadTask?
+            private var lastBytes: Int64 = 0
+            private var lastTime: Date?
+
+            init(id: String = UUID().uuidString, video: VideoItem, quality: VideoQuality) {
+                self.id = id
+                self.video = video
+                self.quality = quality
+            }
+
+            func updateProgress(bytesWritten: Int64, totalBytes: Int64) {
+                let now = Date()
+                self.downloadedBytes = bytesWritten
+                self.totalBytes = totalBytes
+                if totalBytes > 0 { self.progress = Double(bytesWritten) / Double(totalBytes) }
+                if let lastTime = lastTime {
+                    let elapsed = now.timeIntervalSince(lastTime)
+                    if elapsed > 0.5 {
+                        let bps = Double(bytesWritten - lastBytes) / elapsed
+                        self.speed = formatSpeed(bps)
+                        self.lastBytes = bytesWritten
+                        self.lastTime = now
+                    }
+                } else { self.lastTime = now }
+                self.status = .downloading(progress: self.progress)
+            }
+
+            private func formatSpeed(_ bps: Double) -> String {
+                if bps < 1024 { return "\(Int(bps)) B/s" }
+                if bps < 1024*1024 { return String(format: "%.1f KB/s", bps/1024) }
+                return String(format: "%.1f MB/s", bps/(1024*1024))
+            }
+
+            var sizeText: String {
+                if totalBytes > 0 { return "\(formatBytes(downloadedBytes)) / \(formatBytes(totalBytes))" }
+                return formatBytes(downloadedBytes)
+            }
+
+            private func formatBytes(_ bytes: Int64) -> String {
+                let f = ByteCountFormatter()
+                f.allowedUnits = [.useMB, .useGB]
+                f.countStyle = .file
+                return f.string(fromByteCount: bytes)
+            }
+        }
+        SWIFTEOF
+
+        # ============================================================
+        # FILE 5: DownloadManager.swift
+        # ============================================================
+        cat > VideoFlow/Services/DownloadManager.swift << 'SWIFTEOF'
+        import Foundation
+        import UserNotifications
+
+        class DownloadManager: NSObject, ObservableObject {
+            static let shared = DownloadManager()
+
+            @Published var activeDownloads: [DownloadTask] = []
+            @Published var completedVideos: [DownloadTask] = []
+
+            var backgroundCompletionHandler: (() -> Void)?
+            private var urlSession: URLSession!
+            private var taskMap: [URLSessionTask: DownloadTask] = [:]
+
+            override init() {
+                super.init()
+                let config = URLSessionConfiguration.background(withIdentifier: "com.videoflow.download")
+                config.isDiscretionary = false
+                config.sessionSendsLaunchEvents = true
+                config.allowsCellularAccess = true
+                urlSession = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+                loadSavedVideos()
+            }
+
+            func startDownload(video: VideoItem, quality: VideoQuality) {
+                guard let url = URL(string: video.url) else { return }
+                let task = DownloadTask(video: video, quality: quality)
+                DispatchQueue.main.async { self.activeDownloads.append(task) }
+                var request = URLRequest(url: url)
+                request.setValue(
+                    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_4 like Mac OS X) AppleWebKit/605.1.15",
+                    forHTTPHeaderField: "User-Agent"
+                )
+                let dlTask = urlSession.downloadTask(with: request)
+                task.urlSessionTask = dlTask
+                taskMap[dlTask] = task
+                dlTask.resume()
+                task.status = .downloading(progress: 0)
+            }
+
+            func pauseDownload(_ task: DownloadTask) {
+                task.urlSessionTask?.cancel(byProducingResumeData: { _ in
+                    DispatchQueue.main.async { task.status = .paused }
+                })
+            }
+
+            func resumeDownload(_ task: DownloadTask) {
+                task.status = .downloading(progress: task.progress)
+                task.urlSessionTask?.resume()
+            }
+
+            func cancelDownload(_ task: DownloadTask) {
+                task.urlSessionTask?.cancel()
+                DispatchQueue.main.async { self.activeDownloads.removeAll { $0.id == task.id } }
+            }
+
+            func deleteVideo(_ task: DownloadTask) {
+                if let url = task.savedURL { try? FileManager.default.removeItem(at: url) }
+                DispatchQueue.main.async { self.completedVideos.removeAll { $0.id == task.id } }
+            }
+
+            private func getDownloadsDirectory() -> URL {
+                let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
+                let dir = paths[0].appendingPathComponent("VideoFlow", isDirectory: true)
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                return dir
+            }
+
+            private func loadSavedVideos() {
+                let dir = getDownloadsDirectory()
+                guard let files = try? FileManager.default.contentsOfDirectory(
+                    at: dir, includingPropertiesForKeys: [.fileSizeKey]
+                ) else { return }
+                let ext = ["mp4","m4v","mov","mkv","avi"]
+                let videoFiles = files.filter { ext.contains($0.pathExtension.lowercased()) }
+                DispatchQueue.main.async {
+                    self.completedVideos = videoFiles.map { url in
+                        let video = VideoItem(
+                            id: url.lastPathComponent,
+                            title: url.deletingPathExtension().lastPathComponent,
+                            url: url.absoluteString,
+                            thumbnailURL: nil, duration: nil, estimatedSize: nil,
+                            availableQualities: [.p720], sourceType: .direct
+                        )
+                        let task = DownloadTask(video: video, quality: .p720)
+                        task.savedURL = url
+                        task.status = .completed
+                        return task
+                    }
+                }
+            }
+        }
+
+        extension DownloadManager: URLSessionDownloadDelegate {
+            func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                            didFinishDownloadingTo location: URL) {
+                guard let task = taskMap[downloadTask] else { return }
+                let rawName = "\(task.video.title.prefix(40))_\(task.quality.rawValue).mp4"
+                let fileName = rawName
+                    .replacingOccurrences(of: "/", with: "_")
+                    .replacingOccurrences(of: ":", with: "_")
+                    .replacingOccurrences(of: " ", with: "_")
+                let destURL = getDownloadsDirectory().appendingPathComponent(fileName)
+                do {
+                    if FileManager.default.fileExists(atPath: destURL.path) {
+                        try FileManager.default.removeItem(at: destURL)
+                    }
+                    try FileManager.default.moveItem(at: location, to: destURL)
+                    DispatchQueue.main.async {
+                        task.savedURL = destURL
+                        task.status = .completed
+                        task.progress = 1.0
+                        self.activeDownloads.removeAll { $0.id == task.id }
+                        self.completedVideos.insert(task, at: 0)
+                        self.taskMap.removeValue(forKey: downloadTask)
+                        self.sendNotification(for: task)
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        task.status = .failed(error: error.localizedDescription)
+                        self.taskMap.removeValue(forKey: downloadTask)
+                    }
+                }
+            }
+
+            func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                            didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+                            totalBytesExpectedToWrite: Int64) {
+                guard let task = taskMap[downloadTask] else { return }
+                DispatchQueue.main.async {
+                    task.updateProgress(bytesWritten: totalBytesWritten, totalBytes: totalBytesExpectedToWrite)
+                }
+            }
+
+            func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+                guard let dlTask = task as? URLSessionDownloadTask,
+                      let t = taskMap[dlTask], let error = error else { return }
+                if (error as NSError).code != NSURLErrorCancelled {
+                    DispatchQueue.main.async { t.status = .failed(error: error.localizedDescription) }
+                }
+            }
+
+            func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+                DispatchQueue.main.async {
+                    self.backgroundCompletionHandler?()
+                    self.backgroundCompletionHandler = nil
+                }
+            }
+
+            private func sendNotification(for task: DownloadTask) {
+                let content = UNMutableNotificationContent()
+                content.title = "✅ Download Complete"
+                content.body = "\(task.video.title) - \(task.quality.rawValue)"
+                content.sound = .default
+                let req = UNNotificationRequest(identifier: task.id, content: content, trigger: nil)
+                UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+            }
+        }
+        SWIFTEOF
+
+        # ============================================================
+        # FILE 6: PlayerManager.swift
+        # ============================================================
+        cat > VideoFlow/Services/PlayerManager.swift << 'SWIFTEOF'
+        import Foundation
+        import AVFoundation
+        import Combine
+
+        class PlayerManager: ObservableObject {
+            static let shared = PlayerManager()
+
+            @Published var currentVideo: DownloadTask?
+            @Published var isPlaying = false
+            @Published var isFullScreen = false
+            @Published var isMinimized = false
+            @Published var currentTime: Double = 0
+            @Published var duration: Double = 0
+            @Published var volume: Float = 1.0
+            @Published var playbackSpeed: Float = 1.0
+            @Published var isMuted = false
+            @Published var isLoading = false
+
+            var player: AVPlayer?
+            private var timeObserver: Any?
+            private var cancellables = Set<AnyCancellable>()
+
+            func playVideo(_ task: DownloadTask) {
+                currentVideo = task
+                let url: URL?
+                if let saved = task.savedURL { url = saved }
+                else { url = URL(string: task.video.url) }
+                guard let videoURL = url else { return }
+
+                isLoading = true
+                player?.pause()
+                player = AVPlayer(url: videoURL)
+                player?.volume = volume
+
+                player?.currentItem?.publisher(for: \.duration)
+                    .receive(on: DispatchQueue.main)
+                    .sink { [weak self] dur in
+                        let secs = dur.seconds
+                        self?.duration = secs.isNaN || secs.isInfinite ? 0 : secs
+                        self?.isLoading = false
+                    }.store(in: &cancellables)
+
+                let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
+                timeObserver = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) {
+                    [weak self] time in
+                    self?.currentTime = time.seconds
+                }
+
+                player?.play()
+                isPlaying = true
+                isFullScreen = true
+                isMinimized = false
+            }
+
+            func togglePlayPause() {
+                isPlaying ? player?.pause() : player?.play()
+                isPlaying.toggle()
+            }
+
+            func seek(to time: Double) {
+                let t = CMTime(seconds: time, preferredTimescale: 600)
+                player?.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
+            }
+
+            func skipForward(_ s: Double = 10) { seek(to: min(currentTime + s, duration)) }
+            func skipBackward(_ s: Double = 10) { seek(to: max(currentTime - s, 0)) }
+
+            func setSpeed(_ speed: Float) {
+                playbackSpeed = speed
+                if isPlaying { player?.rate = speed }
+            }
+
+            func setVolume(_ vol: Float) { volume = vol; player?.volume = vol }
+
+            func minimize() { isFullScreen = false; isMinimized = true }
+
+            func close() {
+                if let obs = timeObserver { player?.removeTimeObserver(obs); timeObserver = nil }
+                player?.pause(); player = nil
+                isPlaying = false; isFullScreen = false; isMinimized = false
+                currentVideo = nil; currentTime = 0; duration = 0
+            }
+
+            var progress: Double { duration > 0 ? currentTime / duration : 0 }
+
+            func formattedTime(_ t: Double) -> String {
+                guard !t.isNaN && !t.isInfinite else { return "0:00" }
+                let s = Int(t); let h = s/3600; let m = (s%3600)/60; let sec = s%60
+                return h > 0 ? String(format: "%d:%02d:%02d", h,m,sec) : String(format: "%d:%02d", m,sec)
+            }
+        }
+        SWIFTEOF
+
+        # ============================================================
+        # FILE 7: ContentView.swift
+        # ============================================================
+        cat > VideoFlow/Views/ContentView.swift << 'SWIFTEOF'
+        import SwiftUI
+
+        struct ContentView: View {
+            @State private var selectedTab = 0
+            @EnvironmentObject var downloadManager: DownloadManager
+            @EnvironmentObject var playerManager: PlayerManager
+
+            var body: some View {
+                ZStack {
+                    TabView(selection: $selectedTab) {
+                        BrowserView()
+                            .tabItem { Label("Browser", systemImage: "globe") }
+                            .tag(0)
+
+                        DownloadsView()
+                            .tabItem { Label("Downloads", systemImage: "arrow.down.circle.fill") }
+                            .tag(1)
+                            .badge(downloadManager.activeDownloads.count)
+
+                        LibraryView()
+                            .tabItem { Label("Library", systemImage: "play.rectangle.fill") }
+                            .tag(2)
+                            .badge(downloadManager.completedVideos.count)
+                    }
+                    .accentColor(.blue)
+
+                    if playerManager.isMinimized && playerManager.currentVideo != nil {
+                        VStack {
+                            Spacer()
+                            MiniPlayerView().padding(.bottom, 55)
+                        }
+                    }
+                }
+                .sheet(isPresented: $playerManager.isFullScreen) {
+                    if let video = playerManager.currentVideo {
+                        PlayerView(video: video).environmentObject(playerManager)
+                    }
+                }
+            }
+        }
+        SWIFTEOF
+
+        # ============================================================
+        # FILE 8: BrowserView.swift
+        # ============================================================
+        cat > VideoFlow/Views/BrowserView.swift << 'SWIFTEOF'
+        import SwiftUI
+        import WebKit
+
+        // MARK: - BrowserViewModel
+        class BrowserViewModel: ObservableObject {
+            @Published var urlText = ""
+            @Published var isLoading = false
+            @Published var loadingProgress: Double = 0
+            @Published var canGoBack = false
+            @Published var canGoForward = false
+            @Published var isSecure = true
+            @Published var detectedVideos: [VideoItem] = []
+            var networkVideos: Set<String> = []
+            weak var webView: WKWebView?
+
+            init() { navigate(to: "https://www.google.com") }
+
+            func navigate(to raw: String) {
+                var s = raw.trimmingCharacters(in: .whitespaces)
+                if !s.hasPrefix("http://") && !s.hasPrefix("https://") {
+                    if s.contains(".") && !s.contains(" ") { s = "https://" + s }
+                    else {
+                        let encoded = s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s
+                        s = "https://www.google.com/search?q=" + encoded
+                    }
+                }
+                guard let url = URL(string: s) else { return }
+                webView?.load(URLRequest(url: url))
+                urlText = s
+            }
+
+            func goBack()       { webView?.goBack() }
+            func goForward()    { webView?.goForward() }
+            func reload()       { webView?.reload() }
+            func stopLoading()  { webView?.stopLoading() }
+
+            func detectVideos() {
+                webView?.evaluateJavaScript("window.scanForVideos ? window.scanForVideos() : 0", completionHandler: nil)
+            }
+
+            func addNetworkVideo(_ url: String) {
+                guard !networkVideos.contains(url) else { return }
+                networkVideos.insert(url)
+                let video = VideoItem(
+                    id: UUID().uuidString, title: "Video (\(URL(string: url)?.host ?? "unknown"))",
+                    url: url, thumbnailURL: nil, duration: nil, estimatedSize: nil,
+                    availableQualities: url.contains(".m3u8") ? [.p1080,.p720,.p480,.p360] : [.p720,.p480,.p360],
+                    sourceType: url.contains(".m3u8") ? .hls : .direct
+                )
+                DispatchQueue.main.async {
+                    if !self.detectedVideos.contains(where: { $0.url == url }) {
+                        self.detectedVideos.append(video)
+                    }
+                }
+            }
+
+            func processVideoSources(_ sources: [[String: Any]]) {
+                for source in sources {
+                    guard let url = source["src"] as? String, !url.isEmpty else { continue }
+                    let title = source["title"] as? String ?? "Video"
+                    let duration = source["duration"] as? Double
+                    let height = source["height"] as? Int ?? 0
+                    let qualities = qualitiesFromHeight(height)
+                    if !detectedVideos.contains(where: { $0.url == url }) {
+                        let video = VideoItem(
+                            id: UUID().uuidString, title: title, url: url,
+                            thumbnailURL: nil,
+                            duration: duration != nil ? formatDur(duration!) : nil,
+                            estimatedSize: nil, availableQualities: qualities,
+                            sourceType: url.contains(".m3u8") ? .hls : .direct
+                        )
+                        DispatchQueue.main.async { self.detectedVideos.append(video) }
+                    }
+                }
+            }
+
+            private func qualitiesFromHeight(_ h: Int) -> [VideoQuality] {
+                if h >= 2160 { return [.p2160,.p1080,.p720,.p480] }
+                if h >= 1080 { return [.p1080,.p720,.p480] }
+                if h >= 720  { return [.p720,.p480,.p360] }
+                if h >= 480  { return [.p480,.p360] }
+                return [.p360,.p240]
+            }
+
+            private func formatDur(_ s: Double) -> String {
+                guard !s.isNaN && !s.isInfinite else { return "?" }
+                let t = Int(s); let h = t/3600; let m = (t%3600)/60; let sec = t%60
+                return h > 0 ? String(format:"%d:%02d:%02d",h,m,sec) : String(format:"%d:%02d",m,sec)
+            }
+
+            func shareCurrentPage() {
+                guard let url = webView?.url else { return }
+                let vc = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+                if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let root = scene.windows.first?.rootViewController {
+                    root.present(vc, animated: true)
+                }
+            }
+        }
+
+        // MARK: - WebViewRepresentable
+        struct WebViewRepresentable: UIViewRepresentable {
+            @ObservedObject var vm: BrowserViewModel
+
+            func makeUIView(context: Context) -> WKWebView {
+                let cfg = WKWebViewConfiguration()
+                cfg.allowsInlineMediaPlayback = true
+                cfg.mediaTypesRequiringUserActionForPlayback = []
+                let js = WKUserScript(source: detectionJS, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
+                cfg.userContentController.addUserScript(js)
+                cfg.userContentController.add(context.coordinator, name: "videoDetected")
+                cfg.userContentController.add(context.coordinator, name: "videoSources")
+                let wv = WKWebView(frame: .zero, configuration: cfg)
+                wv.navigationDelegate = context.coordinator
+                wv.uiDelegate = context.coordinator
+                wv.allowsBackForwardNavigationGestures = true
+                wv.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Mobile/15E148 Safari/604.1"
+                vm.webView = wv
+                return wv
+            }
+
+            func updateUIView(_ wv: WKWebView, context: Context) {}
+
+            func makeCoordinator() -> Coordinator { Coordinator(vm: vm) }
+
+            var detectionJS: String { """
+        (function(){
+          var detected=new Set();
+          function scan(){
+            var vs=document.querySelectorAll('video');
+            var arr=[];
+            vs.forEach(function(v,i){
+              var src=v.src||v.currentSrc||'';
+              var srcs=[];
+              v.querySelectorAll('source').forEach(function(s){if(s.src)srcs.push({src:s.src,type:s.type||''});});
+              if(src||srcs.length>0){
+                arr.push({id:'v'+i,src:src,title:document.title||'Video '+(i+1),
+                  duration:v.duration||0,width:v.videoWidth||0,height:v.videoHeight||0,sources:srcs});
+              }
+            });
+            if(arr.length>0) window.webkit.messageHandlers.videoSources.postMessage(arr);
+            return arr.length;
+          }
+          var oFetch=window.fetch;
+          window.fetch=function(){
+            var url=arguments[0];
+            if(typeof url==='string'&&(url.includes('.m3u8')||url.includes('.mp4')||url.includes('manifest'))&&!detected.has(url)){
+              detected.add(url);
+              window.webkit.messageHandlers.videoDetected.postMessage({url:url,type:'fetch'});
+            }
+            return oFetch.apply(this,arguments);
+          };
+          var OXHR=window.XMLHttpRequest;
+          window.XMLHttpRequest=function(){
+            var x=new OXHR();
+            var oOpen=x.open;
+            x.open=function(m,url){
+              if(url&&(url.includes('.m3u8')||url.includes('.mp4'))&&!detected.has(url)){
+                detected.add(url);
+                window.webkit.messageHandlers.videoDetected.postMessage({url:url,type:'xhr'});
+              }
+              return oOpen.apply(this,arguments);
+            };
+            return x;
+          };
+          window.scanForVideos=scan;
+          var obs=new MutationObserver(function(){scan();});
+          if(document.body) obs.observe(document.body,{childList:true,subtree:true});
+          setTimeout(scan,2000);
+          setTimeout(scan,5000);
+        })();
+        """ }
+
+            class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+                let vm: BrowserViewModel
+                init(vm: BrowserViewModel) { self.vm = vm }
+
+                func userContentController(_ ucc: WKUserContentController, didReceive msg: WKScriptMessage) {
+                    if msg.name == "videoDetected",
+                       let body = msg.body as? [String:Any],
+                       let url = body["url"] as? String { vm.addNetworkVideo(url) }
+                    if msg.name == "videoSources",
+                       let sources = msg.body as? [[String:Any]] { vm.processVideoSources(sources) }
+                }
+
+                func webView(_ wv: WKWebView, didStartProvisionalNavigation _: WKNavigation!) {
+                    vm.isLoading = true; vm.detectedVideos = []
+                }
+
+                func webView(_ wv: WKWebView, didFinish _: WKNavigation!) {
+                    vm.isLoading = false
+                    vm.canGoBack = wv.canGoBack; vm.canGoForward = wv.canGoForward
+                    vm.urlText = wv.url?.absoluteString ?? ""
+                    vm.isSecure = wv.url?.scheme == "https"
+                    DispatchQueue.main.asyncAfter(deadline: .now()+1.5) {
+                        wv.evaluateJavaScript("window.scanForVideos?window.scanForVideos():0", completionHandler: nil)
+                    }
+                }
+
+                func webView(_ wv: WKWebView, didFail _: WKNavigation!, withError _: Error) { vm.isLoading = false }
+
+                func webView(_ wv: WKWebView, createWebViewWith _: WKWebViewConfiguration,
+                             for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+                    if action.targetFrame == nil { wv.load(action.request) }
+                    return nil
+                }
+
+                func webView(_ wv: WKWebView, decidePolicyFor action: WKNavigationAction,
+                             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                    decisionHandler(.allow)
+                }
+            }
+        }
+
+        // MARK: - BrowserView
+        struct BrowserView: View {
+            @StateObject private var vm = BrowserViewModel()
+            @EnvironmentObject var downloadManager: DownloadManager
+            @State private var showVideoSheet = false
+
+            var body: some View {
+                NavigationView {
+                    ZStack {
+                        Color.black.ignoresSafeArea()
+                        VStack(spacing: 0) {
+                            addressBar
+                            if vm.isLoading {
+                                ProgressView(value: vm.loadingProgress)
+                                    .progressViewStyle(.linear).tint(.blue).frame(height:2)
+                            }
+                            WebViewRepresentable(vm: vm).ignoresSafeArea(edges: .bottom)
+                            bottomBar
+                        }
+                    }
+                    .navigationBarHidden(true)
+                }
+                .sheet(isPresented: $showVideoSheet) {
+                    VideoSheet(videos: vm.detectedVideos) { video, quality in
+                        downloadManager.startDownload(video: video, quality: quality)
+                        showVideoSheet = false
+                    }
+                    .presentationDetents([.medium, .large])
+                }
+            }
+
+            private var addressBar: some View {
+                HStack(spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: vm.isSecure ? "lock.fill" : "lock.open.fill")
+                            .foregroundColor(vm.isSecure ? .green : .orange).font(.system(size:12))
+                        TextField("Search or URL...", text: $vm.urlText)
+                            .foregroundColor(.white).font(.system(size:14))
+                            .keyboardType(.URL).autocapitalization(.none).disableAutocorrection(true)
+                            .onSubmit { vm.navigate(to: vm.urlText) }
+                        if !vm.urlText.isEmpty {
+                            Button { vm.urlText = "" } label: {
+                                Image(systemName:"xmark.circle.fill").foregroundColor(.gray).font(.system(size:14))
+                            }
+                        }
+                    }
+                    .padding(.horizontal,10).padding(.vertical,8)
+                    .background(Color.white.opacity(0.1)).cornerRadius(10)
+                    Button { vm.navigate(to: vm.urlText) } label: {
+                        Text("Go").foregroundColor(.blue).font(.system(size:14,weight:.semibold))
+                    }
+                }
+                .padding(.horizontal,12).padding(.vertical,8)
+            }
+
+            private var bottomBar: some View {
+                HStack(spacing: 4) {
+                    barBtn("chevron.left", enabled: vm.canGoBack)  { vm.goBack() }
+                    barBtn("chevron.right", enabled: vm.canGoForward) { vm.goForward() }
+                    barBtn(vm.isLoading ? "xmark" : "arrow.clockwise", enabled: true) {
+                        vm.isLoading ? vm.stopLoading() : vm.reload()
+                    }
+                    Spacer()
+                    Button {
+                        vm.detectVideos()
+                        showVideoSheet = true
+                    } label: {
+                        HStack(spacing:5) {
+                            Image(systemName:"arrow.down.to.line.circle.fill").font(.system(size:16))
+                            Text(vm.detectedVideos.isEmpty ? "Detect Videos" : "\(vm.detectedVideos.count) Videos")
+                                .font(.system(size:12,weight:.bold))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal,12).padding(.vertical,8)
+                        .background(vm.detectedVideos.isEmpty ? Color.blue : Color.red)
+                        .cornerRadius(20)
+                    }
+                    Spacer()
+                    barBtn("house.fill", enabled: true) { vm.navigate(to:"https://www.google.com") }
+                    barBtn("square.and.arrow.up", enabled: true) { vm.shareCurrentPage() }
+                }
+                .padding(.horizontal,12).padding(.vertical,8)
+                .background(Color.white.opacity(0.05))
+            }
+
+            private func barBtn(_ icon: String, enabled: Bool, action: @escaping ()->Void) -> some View {
+                Button(action: action) {
+                    Image(systemName:icon).font(.system(size:18))
+                        .foregroundColor(enabled ? .white : .gray.opacity(0.3))
+                        .frame(width:40,height:40)
+                }.disabled(!enabled)
+            }
+        }
+
+        // MARK: - VideoSheet
+        struct VideoSheet: View {
+            let videos: [VideoItem]
+            let onDownload: (VideoItem, VideoQuality) -> Void
+            @State private var selected: VideoItem?
+            @State private var showQuality = false
+            @Environment(\.dismiss) var dismiss
+
+            var body: some View {
+                NavigationView {
+                    Group {
+                        if videos.isEmpty {
+                            VStack(spacing:16) {
+                                Image(systemName:"video.slash.fill").font(.system(size:50)).foregroundColor(.gray)
+                                Text("No videos detected").font(.title3)
+                                Text("Play a video first then tap Detect").foregroundColor(.secondary)
+                            }.frame(maxWidth:.infinity,maxHeight:.infinity)
+                        } else {
+                            List(videos) { video in
+                                VideoRow(video: video) {
+                                    selected = video; showQuality = true
+                                }
+                            }.listStyle(.plain)
+                        }
+                    }
+                    .navigationTitle("🎬 Detected Videos (\(videos.count))")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement:.navigationBarTrailing) {
+                            Button("Done") { dismiss() }
+                        }
+                    }
+                }
+                .sheet(isPresented: $showQuality) {
+                    if let v = selected {
+                        QualitySheet(video: v) { q in onDownload(v, q) }
+                            .presentationDetents([.medium])
+                    }
+                }
+            }
+        }
+
+        struct VideoRow: View {
+            let video: VideoItem
+            let onTap: () -> Void
+            var body: some View {
+                HStack(spacing:12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius:8).fill(Color.blue.opacity(0.2)).frame(width:80,height:50)
+                        Image(systemName:"play.fill").foregroundColor(.blue).font(.system(size:20))
+                    }
+                    VStack(alignment:.leading,spacing:4) {
+                        Text(video.title).font(.system(size:14,weight:.medium)).lineLimit(2)
+                        HStack(spacing:4) {
+                            Text(video.sourceType.rawValue).font(.caption).foregroundColor(.secondary)
+                            if let d = video.duration { Text("• \(d)").font(.caption).foregroundColor(.secondary) }
+                        }
+                        HStack(spacing:4) {
+                            ForEach(video.availableQualities, id:\.self) { q in
+                                Text(q.rawValue).font(.system(size:9,weight:.bold))
+                                    .foregroundColor(.white).padding(.horizontal,5).padding(.vertical,2)
+                                    .background(q.color).cornerRadius(4)
+                            }
+                        }
+                    }
+                    Spacer()
+                    Button(action: onTap) {
+                        Image(systemName:"arrow.down.circle.fill").font(.system(size:30)).foregroundColor(.blue)
+                    }
+                }
+                .padding(.vertical,6)
+            }
+        }
+
+        struct QualitySheet: View {
+            let video: VideoItem
+            let onSelect: (VideoQuality) -> Void
+            @Environment(\.dismiss) var dismiss
+            var body: some View {
+                NavigationView {
+                    List(video.availableQualities, id:\.self) { q in
+                        Button {
+                            onSelect(q); dismiss()
+                        } label: {
+                            HStack {
+                                VStack(alignment:.leading,spacing:4) {
+                                    Text(q.displayName).font(.system(size:16,weight:.semibold)).foregroundColor(.primary)
+                                    Text(q.description).font(.caption).foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Text(q.rawValue).font(.system(size:12,weight:.bold))
+                                    .foregroundColor(.white).padding(.horizontal,10).padding(.vertical,5)
+                                    .background(q.color).cornerRadius(8)
+                                Image(systemName:"arrow.down.circle.fill").foregroundColor(.blue).font(.system(size:22))
+                            }
+                        }
+                    }
+                    .listStyle(.plain)
+                    .navigationTitle("Select Quality")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement:.navigationBarTrailing) { Button("Cancel"){dismiss()} }
+                    }
+                }
+            }
+        }
+        SWIFTEOF
+
+        # ============================================================
+        # FILE 9: DownloadsView.swift
+        # ============================================================
+        cat > VideoFlow/Views/DownloadsView.swift << 'SWIFTEOF'
+        import SwiftUI
+
+        struct DownloadsView: View {
+            @EnvironmentObject var downloadManager: DownloadManager
+            @EnvironmentObject var playerManager: PlayerManager
+            @State private var tab = 0
+
+            var body: some View {
+                NavigationView {
+                    VStack(spacing:0) {
+                        Picker("", selection:$tab) {
+                            Text("Active (\(downloadManager.activeDownloads.count))").tag(0)
+                            Text("Done (\(downloadManager.completedVideos.count))").tag(1)
+                        }.pickerStyle(.segmented).padding()
+
+                        if tab == 0 {
+                            if downloadManager.activeDownloads.isEmpty {
+                                EmptyState(icon:"arrow.down.circle", title:"No Active Downloads",
+                                           sub:"Browse and tap download button")
+                            } else {
+                                List(downloadManager.activeDownloads) { task in
+                                    ActiveRow(task:task,
+                                        onPause: { downloadManager.pauseDownload(task) },
+                                        onResume: { downloadManager.resumeDownload(task) },
+                                        onCancel: { downloadManager.cancelDownload(task) })
+                                }.listStyle(.plain)
+                            }
+                        } else {
+                            if downloadManager.completedVideos.isEmpty {
+                                EmptyState(icon:"checkmark.circle", title:"No Completed Videos",
+                                           sub:"Downloads will appear here")
+                            } else {
+                                List(downloadManager.completedVideos) { task in
+                                    DoneRow(task:task,
+                                        onPlay: { playerManager.playVideo(task) },
+                                        onDelete: { downloadManager.deleteVideo(task) })
+                                }.listStyle(.plain)
+                            }
+                        }
+                    }
+                    .navigationTitle("Downloads")
+                }
+            }
+        }
+
+        struct ActiveRow: View {
+            @ObservedObject var task: DownloadTask
+            let onPause: ()->Void; let onResume: ()->Void; let onCancel: ()->Void
+            var body: some View {
+                VStack(alignment:.leading,spacing:8) {
+                    HStack {
+                        VStack(alignment:.leading,spacing:4) {
+                            Text(task.video.title).font(.system(size:14,weight:.medium)).lineLimit(2)
+                            HStack(spacing:6) {
+                                Text(task.quality.rawValue).font(.caption).foregroundColor(.white)
+                                    .padding(.horizontal,6).padding(.vertical,2)
+                                    .background(task.quality.color).cornerRadius(4)
+                                Text(task.status.displayText).font(.caption).foregroundColor(.secondary)
+                                if !task.speed.isEmpty { Text("• \(task.speed)").font(.caption).foregroundColor(.blue) }
+                            }
+                            Text(task.sizeText).font(.caption2).foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        HStack(spacing:10) {
+                            if case .paused = task.status {
+                                Button(action:onResume) {
+                                    Image(systemName:"play.circle.fill").font(.system(size:28)).foregroundColor(.green)
+                                }
+                            } else {
+                                Button(action:onPause) {
+                                    Image(systemName:"pause.circle.fill").font(.system(size:28)).foregroundColor(.orange)
+                                }
+                            }
+                            Button(action:onCancel) {
+                                Image(systemName:"xmark.circle.fill").font(.system(size:28)).foregroundColor(.red)
+                            }
+                        }
+                    }
+                    GeometryReader { g in
+                        ZStack(alignment:.leading) {
+                            RoundedRectangle(cornerRadius:4).fill(Color(.systemGray5)).frame(height:6)
+                            RoundedRectangle(cornerRadius:4).fill(Color.blue)
+                                .frame(width:g.size.width*task.progress,height:6)
+                                .animation(.linear(duration:0.3),value:task.progress)
+                        }
+                    }.frame(height:6)
+                }.padding(.vertical,8)
+            }
+        }
+
+        struct DoneRow: View {
+            let task: DownloadTask; let onPlay: ()->Void; let onDelete: ()->Void
+            var body: some View {
+                HStack(spacing:12) {
+                    Button(action:onPlay) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius:8).fill(Color.blue.opacity(0.2)).frame(width:80,height:50)
+                            Image(systemName:"play.circle.fill").foregroundColor(.blue).font(.system(size:28))
+                        }
+                    }
+                    VStack(alignment:.leading,spacing:4) {
+                        Text(task.video.title).font(.system(size:14,weight:.medium)).lineLimit(2)
+                        HStack(spacing:6) {
+                            Text(task.quality.rawValue).font(.caption).foregroundColor(.white)
+                                .padding(.horizontal,6).padding(.vertical,2)
+                                .background(task.quality.color).cornerRadius(4)
+                        }
+                    }
+                    Spacer()
+                    VStack(spacing:8) {
+                        if let url = task.savedURL { ShareLink(item:url) {
+                            Image(systemName:"square.and.arrow.up").foregroundColor(.blue)
+                        }}
+                        Button(action:onDelete) {
+                            Image(systemName:"trash.fill").foregroundColor(.red)
+                        }
+                    }
+                }.padding(.vertical,6)
+            }
+        }
+
+        struct EmptyState: View {
+            let icon,title,sub: String
+            var body: some View {
+                VStack(spacing:16) {
+                    Image(systemName:icon).font(.system(size:55)).foregroundColor(.gray.opacity(0.5))
+                    Text(title).font(.title3).fontWeight(.semibold)
+                    Text(sub).font(.subheadline).foregroundColor(.secondary).multilineTextAlignment(.center)
+                }.frame(maxWidth:.infinity,maxHeight:.infinity)
+            }
+        }
+        SWIFTEOF
+
+        # ============================================================
+        # FILE 10: PlayerView.swift
+        # ============================================================
+        cat > VideoFlow/Views/PlayerView.swift << 'SWIFTEOF'
+        import SwiftUI
+        import AVKit
+        import AVFoundation
+
+        struct PlayerView: View {
+            let video: DownloadTask
+            @EnvironmentObject var playerManager: PlayerManager
+            @State private var showControls = true
+            @State private var timer: Timer?
+            @State private var showSpeed = false
+            @State private var brightness = UIScreen.main.brightness
+
+            var body: some View {
+                ZStack {
+                    Color.black.ignoresSafeArea()
+                    if let p = playerManager.player {
+                        VideoPlayerLayer(player: p)
+                            .ignoresSafeArea()
+                            .onTapGesture { toggleControls() }
+                    }
+                    if playerManager.isLoading {
+                        ProgressView().tint(.white).scaleEffect(2)
+                    }
+                    // Double-tap zones
+                    HStack(spacing:0) {
+                        Color.clear.contentShape(Rectangle())
+                            .onTapGesture(count:2) { playerManager.skipBackward(10); resetTimer() }
+                        Color.clear.contentShape(Rectangle())
+                            .onTapGesture { toggleControls() }
+                        Color.clear.contentShape(Rectangle())
+                            .onTapGesture(count:2) { playerManager.skipForward(10); resetTimer() }
+                    }
+                    if showControls { controls }
+                }
+                .onAppear { playerManager.playVideo(video); startTimer() }
+                .gesture(DragGesture().onChanged { val in
+                    let x = val.startLocation.x
+                    let w = UIScreen.main.bounds.width
+                    let delta = val.translation.height / 500
+                    if x < w/2 {
+                        brightness = max(0,min(1,brightness - delta))
+                        UIScreen.main.brightness = brightness
+                    } else {
+                        playerManager.setVolume(max(0,min(1, playerManager.volume - Float(delta))))
+                    }
+                })
+                .sheet(isPresented:$showSpeed) {
+                    SpeedPicker().environmentObject(playerManager).presentationDetents([.height(320)])
+                }
+            }
+
+            var controls: some View {
+                VStack {
+                    // Top
+                    HStack {
+                        Button { playerManager.close() } label: {
+                            Image(systemName:"xmark").font(.system(size:17,weight:.bold))
+                                .foregroundColor(.white).padding(10)
+                                .background(Color.black.opacity(0.5)).clipShape(Circle())
+                        }
+                        Spacer()
+                        Text(playerManager.currentVideo?.video.title ?? "")
+                            .foregroundColor(.white).font(.system(size:13,weight:.medium))
+                            .lineLimit(1).frame(maxWidth:200)
+                        Spacer()
+                        HStack(spacing:10) {
+                            Button { showSpeed = true } label: {
+                                Text(String(format:"%.1fx",playerManager.playbackSpeed))
+                                    .foregroundColor(.white).font(.system(size:13,weight:.bold))
+                                    .padding(.horizontal,8).padding(.vertical,4)
+                                    .background(Color.black.opacity(0.5)).cornerRadius(6)
+                            }
+                            Button { playerManager.minimize() } label: {
+                                Image(systemName:"pip.enter").font(.system(size:17))
+                                    .foregroundColor(.white).padding(10)
+                                    .background(Color.black.opacity(0.5)).clipShape(Circle())
+                            }
+                        }
+                    }.padding(.horizontal,20).padding(.top,20)
+
+                    Spacer()
+
+                    // Center controls
+                    HStack(spacing:32) {
+                        Button { playerManager.skipBackward(30) } label: {
+                            Image(systemName:"gobackward.30").font(.system(size:28)).foregroundColor(.white)
+                        }
+                        Button { playerManager.skipBackward(10) } label: {
+                            Image(systemName:"gobackward.10").font(.system(size:34)).foregroundColor(.white)
+                        }
+                        Button { playerManager.togglePlayPause() } label: {
+                            Image(systemName: playerManager.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                                .font(.system(size:65)).foregroundColor(.white)
+                                .shadow(color:.black.opacity(0.5),radius:5)
+                        }
+                        Button { playerManager.skipForward(10) } label: {
+                            Image(systemName:"goforward.10").font(.system(size:34)).foregroundColor(.white)
+                        }
+                        Button { playerManager.skipForward(30) } label: {
+                            Image(systemName:"goforward.30").font(.system(size:28)).foregroundColor(.white)
+                        }
+                    }
+
+                    Spacer()
+
+                    // Bottom
+                    VStack(spacing:10) {
+                        // Seek slider
+                        VStack(spacing:4) {
+                            Slider(
+                                value: Binding(get:{ playerManager.currentTime },
+                                               set:{ playerManager.seek(to:$0) }),
+                                in: 0...max(playerManager.duration,1)
+                            ).accentColor(.white)
+                            HStack {
+                                Text(playerManager.formattedTime(playerManager.currentTime))
+                                    .font(.caption).foregroundColor(.white.opacity(0.8))
+                                Spacer()
+                                Text(playerManager.formattedTime(playerManager.duration))
+                                    .font(.caption).foregroundColor(.white.opacity(0.8))
+                            }
+                        }
+                        // Volume
+                        HStack(spacing:10) {
+                            Button {
+                                playerManager.isMuted.toggle()
+                                playerManager.player?.isMuted = playerManager.isMuted
+                            } label: {
+                                Image(systemName: playerManager.isMuted ? "speaker.slash.fill" : "speaker.fill")
+                                    .foregroundColor(.white)
+                            }
+                            Slider(
+                                value: Binding(get:{ Double(playerManager.volume) },
+                                               set:{ playerManager.setVolume(Float($0)) }),
+                                in: 0...1
+                            ).accentColor(.white)
+                            Image(systemName:"speaker.wave.3.fill").foregroundColor(.white)
+                        }
+                    }.padding(.horizontal,20).padding(.bottom,30)
+                }
+                .background(
+                    LinearGradient(
+                        colors:[.black.opacity(0.75),.clear,.clear,.black.opacity(0.75)],
+                        startPoint:.top, endPoint:.bottom)
+                )
+                .transition(.opacity)
+                .animation(.easeInOut(duration:0.25), value: showControls)
+            }
+
+            func toggleControls() {
+                withAnimation { showControls.toggle() }
+                if showControls { startTimer() } else { timer?.invalidate() }
+            }
+
+            func startTimer() {
+                timer?.invalidate()
+                timer = Timer.scheduledTimer(withTimeInterval:4,repeats:false) { _ in
+                    withAnimation { showControls = false }
+                }
+            }
+
+            func resetTimer() { if showControls { startTimer() } }
+        }
+
+        // MARK: - VideoPlayerLayer
+        struct VideoPlayerLayer: UIViewRepresentable {
+            let player: AVPlayer
+            func makeUIView(context: Context) -> PlayerLayerView { PlayerLayerView(player: player) }
+            func updateUIView(_ v: PlayerLayerView, context: Context) {}
+
+            class PlayerLayerView: UIView {
+                override class var layerClass: AnyClass { AVPlayerLayer.self }
+                var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+                init(player: AVPlayer) {
+                    super.init(frame:.zero)
+                    playerLayer.player = player
+                    playerLayer.videoGravity = .resizeAspect
+                }
+                required init?(coder:NSCoder) { fatalError() }
+            }
+        }
+
+        // MARK: - SpeedPicker
+        struct SpeedPicker: View {
+            @EnvironmentObject var playerManager: PlayerManager
+            @Environment(\.dismiss) var dismiss
+            let speeds: [Float] = [0.25,0.5,0.75,1.0,1.25,1.5,1.75,2.0,2.5,3.0]
+            var body: some View {
+                NavigationView {
+                    List(speeds, id:\.self) { s in
+                        Button {
+                            playerManager.setSpeed(s); dismiss()
+                        } label: {
+                            HStack {
+                                Text(String(format:"%.2fx",s)).foregroundColor(.primary)
+                                Spacer()
+                                if playerManager.playbackSpeed == s {
+                                    Image(systemName:"checkmark").foregroundColor(.blue)
+                                }
+                            }
+                        }
+                    }
+                    .navigationTitle("Playback Speed").navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement:.navigationBarTrailing){ Button("Done"){dismiss()} } }
+                }
+            }
+        }
+
+        // MARK: - MiniPlayer
+        struct MiniPlayerView: View {
+            @EnvironmentObject var playerManager: PlayerManager
+            var body: some View {
+                HStack(spacing:12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius:6).fill(Color.blue.opacity(0.3)).frame(width:52,height:36)
+                        Image(systemName:"play.fill").foregroundColor(.blue).font(.system(size:14))
+                    }
+                    VStack(alignment:.leading,spacing:4) {
+                        Text(playerManager.currentVideo?.video.title ?? "")
+                            .font(.system(size:13,weight:.medium)).foregroundColor(.white).lineLimit(1)
+                        GeometryReader { g in
+                            ZStack(alignment:.leading) {
+                                Capsule().fill(Color.white.opacity(0.25)).frame(height:2)
+                                Capsule().fill(Color.blue).frame(width:g.size.width*playerManager.progress,height:2)
+                            }
+                        }.frame(height:2)
+                    }
+                    Spacer()
+                    Button { playerManager.togglePlayPause() } label: {
+                        Image(systemName: playerManager.isPlaying ? "pause.fill" : "play.fill")
+                            .foregroundColor(.white).font(.system(size:18))
+                    }
+                    Button { playerManager.close() } label: {
+                        Image(systemName:"xmark").foregroundColor(.white).font(.system(size:16))
+                    }
+                }
+                .padding(.horizontal,16).padding(.vertical,10)
+                .background(RoundedRectangle(cornerRadius:16).fill(Color(.systemGray6).opacity(0.95))
+                    .shadow(color:.black.opacity(0.3),radius:10))
+                .padding(.horizontal,12)
+                .onTapGesture { playerManager.isFullScreen = true; playerManager.isMinimized = false }
+            }
+        }
+        SWIFTEOF
+
+        # ============================================================
+        # FILE 11: LibraryView.swift
+        # ============================================================
+        cat > VideoFlow/Views/LibraryView.swift << 'SWIFTEOF'
+        import SwiftUI
+
+        struct LibraryView: View {
+            @EnvironmentObject var downloadManager: DownloadManager
+            @EnvironmentObject var playerManager: PlayerManager
+            @State private var search = ""
+
+            var filtered: [DownloadTask] {
+                search.isEmpty ? downloadManager.completedVideos :
+                downloadManager.completedVideos.filter {
+                    $0.video.title.localizedCaseInsensitiveContains(search)
+                }
+            }
+
+            var body: some View {
+                NavigationView {
+                    Group {
+                        if filtered.isEmpty {
+                            EmptyState(icon:"play.rectangle.fill", title:"Library Empty",
+                                       sub:"Downloaded videos appear here")
+                        } else {
+                            ScrollView {
+                                LazyVGrid(columns:[GridItem(.flexible()),GridItem(.flexible())],spacing:12) {
+                                    ForEach(filtered) { task in
+                                        GridCard(task:task) { playerManager.playVideo(task) }
+                                    }
+                                }.padding()
+                            }
+                        }
+                    }
+                    .searchable(text:$search, prompt:"Search videos")
+                    .navigationTitle("My Library")
+                }
+            }
+        }
+
+        struct GridCard: View {
+            let task: DownloadTask; let onPlay: ()->Void
+            var body: some View {
+                Button(action:onPlay) {
+                    VStack(alignment:.leading,spacing:6) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius:10).fill(Color.blue.opacity(0.2))
+                                .aspectRatio(16/9,contentMode:.fit)
+                            Image(systemName:"play.circle.fill").font(.system(size:38)).foregroundColor(.blue)
+                        }
+                        Text(task.video.title).font(.system(size:12,weight:.medium))
+                            .foregroundColor(.primary).lineLimit(2).multilineTextAlignment(.leading)
+                        HStack {
+                            Text(task.quality.rawValue).font(.system(size:10,weight:.bold))
+                                .foregroundColor(.white).padding(.horizontal,6).padding(.vertical,2)
+                                .background(task.quality.color).cornerRadius(4)
+                            Spacer()
+                            if let d = task.video.duration {
+                                Text(d).font(.system(size:10)).foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }.buttonStyle(.plain)
+            }
+        }
+        SWIFTEOF
+
+        # ============================================================
+        # Assets & Info.plist
+        # ============================================================
+        cat > VideoFlow/Resources/Assets.xcassets/Contents.json << 'EOF'
+        {"info":{"author":"xcode","version":1}}
+        EOF
+
+        cat > VideoFlow/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json << 'EOF'
+        {"images":[{"idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}
+        EOF
+
+        cat > VideoFlow/Resources/Assets.xcassets/AccentColor.colorset/Contents.json << 'EOF'
+        {"colors":[{"color":{"colorSpace":"sRGB","components":{"alpha":"1.000","blue":"1.000","green":"0.478","red":"0.000"}},"idiom":"universal"}],"info":{"author":"xcode","version":1}}
+        EOF
+
+        cat > VideoFlow/Resources/Info.plist << 'EOF'
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>CFBundleDisplayName</key><string>VideoFlow</string>
+            <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+            <key>CFBundleIdentifier</key><string>com.videoflow.app</string>
+            <key>CFBundleName</key><string>VideoFlow</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>1.0</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>LSRequiresIPhoneOS</key><true/>
+            <key>MinimumOSVersion</key><string>16.0</string>
+            <key>UIApplicationSupportsIndirectInputEvents</key><true/>
+            <key>UILaunchScreen</key><dict/>
+            <key>UISupportedInterfaceOrientations</key>
+            <array>
+                <string>UIInterfaceOrientationPortrait</string>
+                <string>UIInterfaceOrientationLandscapeLeft</string>
+                <string>UIInterfaceOrientationLandscapeRight</string>
+            </array>
+            <key>NSAppTransportSecurity</key>
+            <dict>
+                <key>NSAllowsArbitraryLoads</key><true/>
+                <key>NSAllowsArbitraryLoadsInWebContent</key><true/>
+            </dict>
+            <key>UIBackgroundModes</key>
+            <array>
+                <string>audio</string>
+                <string>fetch</string>
+                <string>remote-notification</string>
+            </array>
+            <key>UIFileSharingEnabled</key><true/>
+            <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+        </dict>
+        </plist>
+        EOF
+
+        echo "✅ All source files created!"
+
+    - name: Create Xcode Project File
+      run: |
+        cat > VideoFlow.xcodeproj/project.pbxproj << 'PBXEOF'
+        // !$*UTF8*$!
+        {
+        	archiveVersion = 1;
+        	classes = {};
+        	objectVersion = 56;
+        	objects = {
+        /* PBXBuildFile */
+        		AA01 = {isa=PBXBuildFile;fileRef=BB01;};
+        		AA02 = {isa=PBXBuildFile;fileRef=BB02;};
+        		AA03 = {isa=PBXBuildFile;fileRef=BB03;};
+        		AA04 = {isa=PBXBuildFile;fileRef=BB04;};
+        		AA05 = {isa=PBXBuildFile;fileRef=BB05;};
+        		AA06 = {isa=PBXBuildFile;fileRef=BB06;};
+        		AA07 = {isa=PBXBuildFile;fileRef=BB07;};
+        		AA08 = {isa=PBXBuildFile;fileRef=BB08;};
+        		AA09 = {isa=PBXBuildFile;fileRef=BB09;};
+        		AA10 = {isa=PBXBuildFile;fileRef=BB10;};
+        		AA11 = {isa=PBXBuildFile;fileRef=BB11;};
+        		AA12 = {isa=PBXBuildFile;fileRef=BB12;};
+        /* PBXFileReference */
+        		BB01 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=VideoFlowApp.swift;name=VideoFlowApp.swift;sourceTree="<group>";};
+        		BB02 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=AppDelegate.swift;name=AppDelegate.swift;sourceTree="<group>";};
+        		BB03 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=VideoItem.swift;name=VideoItem.swift;sourceTree="<group>";};
+        		BB04 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=DownloadTask.swift;name=DownloadTask.swift;sourceTree="<group>";};
+        		BB05 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=DownloadManager.swift;name=DownloadManager.swift;sourceTree="<group>";};
+        		BB06 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=PlayerManager.swift;name=PlayerManager.swift;sourceTree="<group>";};
+        		BB07 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=ContentView.swift;name=ContentView.swift;sourceTree="<group>";};
+        		BB08 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=BrowserView.swift;name=BrowserView.swift;sourceTree="<group>";};
+        		BB09 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=DownloadsView.swift;name=DownloadsView.swift;sourceTree="<group>";};
+        		BB10 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=PlayerView.swift;name=PlayerView.swift;sourceTree="<group>";};
+        		BB11 = {isa=PBXFileReference;lastKnownFileType=sourcecode.swift;path=LibraryView.swift;name=LibraryView.swift;sourceTree="<group>";};
+        		BB12 = {isa=PBXFileReference;lastKnownFileType=folder.assetcatalog;path=Assets.xcassets;name=Assets.xcassets;sourceTree="<group>";};
+        		BB13 = {isa=PBXFileReference;lastKnownFileType=text.plist.xml;path=Info.plist;name=Info.plist;sourceTree="<group>";};
+        		CC01 = {isa=PBXFileReference;explicitFileType=wrapper.application;includeInIndex=0;path=VideoFlow.app;sourceTree=BUILT_PRODUCTS_DIR;};
+        /* PBXFrameworksBuildPhase */
+        		DD01 = {isa=PBXFrameworksBuildPhase;buildActionMask=2147483647;files=();runOnlyForDeploymentPostprocessing=0;};
+        /* PBXGroup */
+        		EE01 = {isa=PBXGroup;children=(EE02,EE09);sourceTree="<group>";};
+        		EE02 = {isa=PBXGroup;children=(EE03,EE04,EE05,EE06,EE07);path=VideoFlow;sourceTree="<group>";};
+        		EE03 = {isa=PBXGroup;children=(BB01,BB02);name=App;path=App;sourceTree="<group>";};
+        		EE04 = {isa=PBXGroup;children=(BB07,BB08,BB09,BB10,BB11);name=Views;path=Views;sourceTree="<group>";};
+        		EE05 = {isa=PBXGroup;children=(BB03,BB04);name=Models;path=Models;sourceTree="<group>";};
+        		EE06 = {isa=PBXGroup;children=(BB05,BB06);name=Services;path=Services;sourceTree="<group>";};
+        		EE07 = {isa=PBXGroup;children=(BB12,BB13);name=Resources;path=Resources;sourceTree="<group>";};
+        		EE09 = {isa=PBXGroup;children=(CC01);name=Products;sourceTree="<group>";};
+        /* PBXNativeTarget */
+        		FF01 = {
+        			isa=PBXNativeTarget;
+        			buildConfigurationList=GG01;
+        			buildPhases=(FF02,DD01,FF03);
+        			buildRules=();
+        			dependencies=();
+        			name=VideoFlow;
+        			productName=VideoFlow;
+        			productReference=CC01;
+        			productType="com.apple.product-type.application";
+        		};
+        /* PBXProject */
+        		FF00 = {
+        			isa=PBXProject;
+        			attributes={
+        				BuildIndependentTargetsInParallel=1;
+        				LastSwiftUpdateCheck=1500;
+        				LastUpgradeCheck=1500;
+        				TargetAttributes={FF01={CreatedOnToolsVersion=15.0;};};
+        			};
+        			buildConfigurationList=GG00;
+        			compatibilityVersion="Xcode 14.0";
+        			developmentRegion=en;
+        			hasScannedForEncodings=0;
+        			knownRegions=(en,Base);
+        			mainGroup=EE01;
+        			productRefGroup=EE09;
+        			projectDirPath="";
+        			projectRoot="";
+        			targets=(FF01);
+        		};
+        /* PBXResourcesBuildPhase */
+        		FF03 = {isa=PBXResourcesBuildPhase;buildActionMask=2147483647;files=(AA12);runOnlyForDeploymentPostprocessing=0;};
+        /* PBXSourcesBuildPhase */
+        		FF02 = {
+        			isa=PBXSourcesBuildPhase;
+        			buildActionMask=2147483647;
+        			files=(AA01,AA02,AA03,AA04,AA05,AA06,AA07,AA08,AA09,AA10,AA11);
+        			runOnlyForDeploymentPostprocessing=0;
+        		};
+        /* XCBuildConfiguration */
+        		HH01 = {
+        			isa=XCBuildConfiguration;
+        			buildSettings={
+        				ALWAYS_SEARCH_USER_PATHS=NO;
+        				CLANG_ENABLE_MODULES=YES;
+        				CLANG_ENABLE_OBJC_ARC=YES;
+        				CODE_SIGNING_ALLOWED=NO;
+        				CODE_SIGN_IDENTITY="";
+        				GCC_C_LANGUAGE_STANDARD=gnu17;
+        				SDKROOT=iphoneos;
+        				SWIFT_OPTIMIZATION_LEVEL="-Onone";
+        				SWIFT_VERSION=5.0;
+        			};
+        			name=Debug;
+        		};
+        		HH02 = {
+        			isa=XCBuildConfiguration;
+        			buildSettings={
+        				ALWAYS_SEARCH_USER_PATHS=NO;
+        				CLANG_ENABLE_MODULES=YES;
+        				CLANG_ENABLE_OBJC_ARC=YES;
+        				CODE_SIGNING_ALLOWED=NO;
+        				CODE_SIGN_IDENTITY="";
+        				GCC_C_LANGUAGE_STANDARD=gnu17;
+        				SDKROOT=iphoneos;
+        				SWIFT_COMPILATION_MODE=wholemodule;
+        				SWIFT_OPTIMIZATION_LEVEL="-O";
+        				SWIFT_VERSION=5.0;
+        			};
+        			name=Release;
+        		};
+        		HH03 = {
+        			isa=XCBuildConfiguration;
+        			buildSettings={
+        				ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon;
+        				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME=AccentColor;
+        				CODE_SIGNING_ALLOWED=NO;
+        				CODE_SIGN_IDENTITY="";
+        				CODE_SIGN_STYLE=Manual;
+        				CURRENT_PROJECT_VERSION=1;
+        				GENERATE_INFOPLIST_FILE=NO;
+        				INFOPLIST_FILE=VideoFlow/Resources/Info.plist;
+        				IPHONEOS_DEPLOYMENT_TARGET=16.0;
+        				LD_RUNPATH_SEARCH_PATHS="$(inherited) @executable_path/Frameworks";
+        				MARKETING_VERSION=1.0;
+        				PRODUCT_BUNDLE_IDENTIFIER=com.videoflow.app;
+        				PRODUCT_NAME=VideoFlow;
+        				PROVISIONING_PROFILE_SPECIFIER="";
+        				SWIFT_EMIT_LOC_STRINGS=YES;
+        				SWIFT_VERSION=5.0;
+        				TARGETED_DEVICE_FAMILY="1,2";
+        			};
+        			name=Debug;
+        		};
+        		HH04 = {
+        			isa=XCBuildConfiguration;
+        			buildSettings={
+        				ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon;
+        				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME=AccentColor;
+        				CODE_SIGNING_ALLOWED=NO;
+        				CODE_SIGN_IDENTITY="";
+        				CODE_SIGN_STYLE=Manual;
+        				CURRENT_PROJECT_VERSION=1;
+        				GENERATE_INFOPLIST_FILE=NO;
+        				INFOPLIST_FILE=VideoFlow/Resources/Info.plist;
+        				IPHONEOS_DEPLOYMENT_TARGET=16.0;
+        				LD_RUNPATH_SEARCH_PATHS="$(inherited) @executable_path/Frameworks";
+        				MARKETING_VERSION=1.0;
+        				PRODUCT_BUNDLE_IDENTIFIER=com.videoflow.app;
+        				PRODUCT_NAME=VideoFlow;
+        				PROVISIONING_PROFILE_SPECIFIER="";
+        				SWIFT_EMIT_LOC_STRINGS=YES;
+        				SWIFT_VERSION=5.0;
+        				TARGETED_DEVICE_FAMILY="1,2";
+        			};
+        			name=Release;
+        		};
+        /* XCConfigurationList */
+        		GG00 = {isa=XCConfigurationList;buildConfigurations=(HH01,HH02);defaultConfigurationIsVisible=0;defaultConfigurationName=Release;};
+        		GG01 = {isa=XCConfigurationList;buildConfigurations=(HH03,HH04);defaultConfigurationIsVisible=0;defaultConfigurationName=Release;};
+        	};
+        	rootObject=FF00;
+        }
+        PBXEOF
+        echo "✅ project.pbxproj created!"
+
+    - name: Fix Swift File Indentation
+      run: |
+        for f in $(find VideoFlow -name "*.swift"); do
+          sed -i '' 's/^        //' "$f" 2>/dev/null || sed -i 's/^        //' "$f"
+        done
+        echo "✅ Indentation fixed"
+
+    - name: Show Project Structure
+      run: find . -not -path './.git/*' -not -path './build/*' | head -60
+
+    - name: Build App
+      run: |
+        xcodebuild \
+          -project VideoFlow.xcodeproj \
+          -scheme VideoFlow \
+          -configuration Release \
+          -sdk iphoneos \
+          -arch arm64 \
+          CODE_SIGNING_ALLOWED=NO \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          ONLY_ACTIVE_ARCH=NO \
+          BUILD_DIR=$PWD/build \
+          clean build \
+          2>&1 | tee build.log | grep -E "(error:|warning:|Build succeeded|FAILED|Compiling)" || true
+
+    - name: Check Build Result
+      run: |
+        if grep -q "BUILD SUCCEEDED" build.log; then
+          echo "✅ BUILD SUCCEEDED"
+        else
+          echo "❌ BUILD FAILED - Last 50 lines:"
+          tail -50 build.log
+          exit 1
+        fi
+
+    - name: Package IPA
+      run: |
+        APP_PATH=$(find build -name "VideoFlow.app" -type d | head -1)
+        echo "App found at: $APP_PATH"
+        mkdir -p Payload
+        cp -r "$APP_PATH" Payload/VideoFlow.app
+        zip -r VideoFlow.ipa Payload/
+        rm -rf Payload/
+        ls -lh VideoFlow.ipa
+        echo "✅ IPA packaged successfully!"
+
+    - name: Upload IPA
+      uses: actions/upload-artifact@v4
+      with:
+        name: VideoFlow-IPA
+        path: VideoFlow.ipa
+        retention-days: 30
+
+    - name: Upload Build Log (on failure)
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-log
+        path: build.log
+        retention-days: 7
